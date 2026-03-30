@@ -17,8 +17,12 @@ services:
     image: nginx:latest
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Mount your SSL certificate and key (update these paths as needed)
+      - ../nginx/ssl/your_cert.crt:/etc/ssl/certs/your_cert.crt:ro
+      - ../nginx/ssl/your_key.key:/etc/ssl/private/your_key.key:ro
     depends_on:
       - api
     networks:
