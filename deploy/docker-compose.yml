@@ -1,32 +1,32 @@
-version: '3.8'
+version: "3.9"
+
 services:
-  api:
+  hostel-api:
     build:
       context: ..
       dockerfile: Dockerfile
+
+    container_name: hostel-api
+    restart: unless-stopped
+
     env_file:
       - ../.env
-    expose:
-      - "8000"
-    volumes:
-      - ../app:/app
-    networks:
-      - api_net
 
-  nginx:
-    image: nginx:latest
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      # Mount your SSL certificate and key (update these paths as needed)
-      - ../nginx/ssl/your_cert.crt:/etc/ssl/certs/your_cert.crt:ro
-      - ../nginx/ssl/your_key.key:/etc/ssl/private/your_key.key:ro
-    depends_on:
-      - api
+    expose:
+      - "3000"
+
     networks:
-      - api_net
+      - shared_network
+
+    mem_limit: 256m
+    cpus: "0.5"
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
 
 networks:
-  api_net:
+  shared_network:
+    external: true
