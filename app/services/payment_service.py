@@ -20,6 +20,9 @@ class PaymentService:
             return None
         if payment:
             payment["id"] = str(payment["_id"])
+            # Format amount from paise to display string
+            payment["amount"] = format_amount_paise(payment.get("amountPaise", payment.get("amount", 0)))
+            payment.pop("amountPaise", None)
             return Payment(**payment)
         return None
 

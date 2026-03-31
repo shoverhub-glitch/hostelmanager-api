@@ -12,12 +12,19 @@ from app.services.payment_service import PaymentService
 from app.models.tenant_schema import BillingConfig
 from typing import Optional, List
 from pymongo.errors import OperationFailure
+import calendar
 import logging
 
 
 bed_service = BedService()
 payment_service = PaymentService()
 logger = logging.getLogger(__name__)
+
+
+def clamp_day_to_month(year: int, month: int, day: int) -> int:
+    """Clamp day to valid range for the given month (handles leap years)."""
+    max_day = calendar.monthrange(year, month)[1]
+    return min(day, max_day)
 
 
 class TenantService:
@@ -42,7 +49,9 @@ class TenantService:
     @staticmethod
     def _get_current_month_anchor(anchor_day: int, today: date) -> date:
         """Return the anchor date in the current month (clamped by calendar)."""
-        return today + relativedelta(day=anchor_day)
+        year, month = today.year, today.month
+        clamped_day = clamp_day_to_month(year, month, anchor_day)
+        return date(year, month, clamped_day)
 
     @classmethod
     def _calculate_initial_due_date(cls, anchor_day: int, billing_status: str, today: date) -> date:
@@ -56,13 +65,21 @@ class TenantService:
         current_month_anchor = cls._get_current_month_anchor(anchor_day, today)
         is_future_anchor = current_month_anchor > today
 
+        def _add_month_with_clamp(base_date: date, months: int) -> date:
+            result = base_date + relativedelta(months=months)
+            return date(
+                result.year,
+                result.month,
+                clamp_day_to_month(result.year, result.month, anchor_day)
+            )
+
         if billing_status == BillingStatus.DUE.value:
             if not is_future_anchor:
-                return current_month_anchor + relativedelta(months=1)
+                return _add_month_with_clamp(current_month_anchor, 1)
             return current_month_anchor
         else:  # paid
             if is_future_anchor:
-                return current_month_anchor - relativedelta(months=1)
+                return _add_month_with_clamp(current_month_anchor, -1)
             return current_month_anchor
 
     @classmethod
@@ -72,13 +89,21 @@ class TenantService:
         """
         current_month_anchor = cls._get_current_month_anchor(anchor_day, today)
 
+        def _add_month_clamped(base: date) -> date:
+            result = base + relativedelta(months=1)
+            return date(
+                result.year,
+                result.month,
+                clamp_day_to_month(result.year, result.month, anchor_day)
+            )
+
         if join_date < today:
-            return current_month_anchor + relativedelta(months=1)
+            return _add_month_clamped(current_month_anchor)
 
         if join_date > today:
             if current_month_anchor > today:
                 return current_month_anchor
-            return current_month_anchor + relativedelta(months=1)
+            return _add_month_clamped(current_month_anchor)
 
         return cls._calculate_initial_due_date(
             anchor_day=anchor_day,
@@ -301,11 +326,19 @@ class TenantService:
         auto_generate = tenant_data.get("autoGeneratePayments", True)
 
         billing_config = None
-        if auto_generate and tenant_data.get("billingConfig"):
-            billing_config = tenant_data.get("billingConfig")
-            if isinstance(billing_config, dict):
-                billing_config = BillingConfig(**billing_config)
-            tenant_data["billingConfig"] = billing_config.model_dump()
+        if auto_generate:
+            if tenant_data.get("billingConfig"):
+                billing_config = tenant_data.get("billingConfig")
+                if isinstance(billing_config, dict):
+                    billing_config = BillingConfig(**billing_config)
+                tenant_data["billingConfig"] = billing_config.model_dump()
+            else:
+                billing_config = BillingConfig(
+                    status=BillingStatus.DUE.value,
+                    billingCycle=BillingCycle.MONTHLY.value,
+                    anchorDay=1
+                )
+                tenant_data["billingConfig"] = billing_config.model_dump()
         elif not auto_generate:
             tenant_data.pop("billingConfig", None)
 
@@ -347,7 +380,12 @@ class TenantService:
                 if is_future_anchor:
                     due_date = current_month_anchor
                 else:
-                    due_date = current_month_anchor + relativedelta(months=1)
+                    next_month = current_month_anchor + relativedelta(months=1)
+                    due_date = date(
+                        next_month.year,
+                        next_month.month,
+                        clamp_day_to_month(next_month.year, next_month.month, anchor_day)
+                    )
                 initial_status = billing_config.status
             else:
                 due_date = today_date
@@ -686,7 +724,12 @@ class TenantService:
 
                     if latest_payment:
                         last_due_date = self._coerce_to_date(latest_payment["dueDate"])
-                        current_due_date = last_due_date + relativedelta(months=1, day=anchor_day)
+                        next_month = last_due_date + relativedelta(months=1)
+                        current_due_date = date(
+                            next_month.year,
+                            next_month.month,
+                            clamp_day_to_month(next_month.year, next_month.month, anchor_day)
+                        )
                     else:
                         join_date_str = tenant_doc.get("joinDate")
                         if not join_date_str:
@@ -694,13 +737,31 @@ class TenantService:
 
                         join_date = self._coerce_to_date(join_date_str)
                         start_tracking_date = max(join_date, min_allowed_start)
-                        current_due_date = start_tracking_date + relativedelta(day=anchor_day)
+                        current_due_date = date(
+                            start_tracking_date.year,
+                            start_tracking_date.month,
+                            clamp_day_to_month(start_tracking_date.year, start_tracking_date.month, anchor_day)
+                        )
                         if current_due_date < start_tracking_date:
-                            current_due_date = current_due_date + relativedelta(months=1)
+                            next_month = current_due_date + relativedelta(months=1)
+                            current_due_date = date(
+                                next_month.year,
+                                next_month.month,
+                                clamp_day_to_month(next_month.year, next_month.month, anchor_day)
+                            )
 
-                    target_due_date = today + relativedelta(day=anchor_day)
+                    target_due_date = date(
+                        today.year,
+                        today.month,
+                        clamp_day_to_month(today.year, today.month, anchor_day)
+                    )
                     if target_due_date > today:
-                        target_due_date = target_due_date - relativedelta(months=1)
+                        prev_month = target_due_date + relativedelta(months=-1)
+                        target_due_date = date(
+                            prev_month.year,
+                            prev_month.month,
+                            clamp_day_to_month(prev_month.year, prev_month.month, anchor_day)
+                        )
 
                     if current_due_date > target_due_date:
                         result["skipped"] += 1
@@ -740,7 +801,12 @@ class TenantService:
                         else:
                             result["skipped"] += 1
 
-                        current_due_date = current_due_date + relativedelta(months=1, day=anchor_day)
+                        next_month = current_due_date + relativedelta(months=1)
+                        current_due_date = date(
+                            next_month.year,
+                            next_month.month,
+                            clamp_day_to_month(next_month.year, next_month.month, anchor_day)
+                        )
 
                 except Exception as tenant_error:
                     logger.exception(

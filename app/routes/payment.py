@@ -209,14 +209,17 @@ async def list_payments(
         match_stage["status"] = status
 
     if startDate or endDate:
-        date_query = {}
-        if startDate:
-            start_datetime = datetime.fromisoformat(startDate.replace('Z', '+00:00'))
-            date_query["$gte"] = start_datetime.date().isoformat()
-        if endDate:
-            end_datetime = datetime.fromisoformat(endDate.replace('Z', '+00:00'))
-            date_query["$lte"] = end_datetime.date().isoformat()
-        if date_query:
+        # Extract date strings directly (YYYY-MM-DD format)
+        # This avoids timezone issues - compare dates as strings
+        start_str = startDate[:10] if startDate else None
+        end_str = endDate[:10] if endDate else None
+        
+        if start_str or end_str:
+            date_query = {}
+            if start_str:
+                date_query["$gte"] = start_str
+            if end_str:
+                date_query["$lte"] = end_str
             match_stage["dueDate"] = date_query
 
     skip = (page - 1) * page_size

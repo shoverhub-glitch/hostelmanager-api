@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 from datetime import datetime, timezone
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
 from typing import Any
 
 
@@ -67,18 +67,18 @@ class ExactLevelFilter(logging.Filter):
 def _create_rotating_handler(
     log_path: str,
     formatter: logging.Formatter,
-    max_bytes: int,
     backup_count: int,
     level: int,
     exact_level: int | None = None,
 ) -> logging.Handler | None:
-    """Create a rotating file handler without crashing app startup on permission issues."""
+    """Create a time-based rotating file handler without crashing app startup on permission issues."""
     try:
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
-        file_handler = RotatingFileHandler(
+        file_handler = TimedRotatingFileHandler(
             log_path,
-            maxBytes=max(1, max_bytes),
-            backupCount=max(1, backup_count),
+            when="midnight",
+            interval=1,
+            backupCount=backup_count,
             encoding="utf-8",
         )
     except OSError as exc:
@@ -96,81 +96,50 @@ def _create_rotating_handler(
 
 
 def setup_logging() -> None:
-    """Configure root logging from centralized settings."""
-    # Import here to avoid circular imports
-    from app.config.settings import (
-        LOG_DIR,
-        LOG_ENDPOINTS_ONLY,
-        LOG_FILE_BACKUP_COUNT,
-        LOG_FILE_MAX_BYTES,
-        LOG_LEVEL,
-        LOG_TO_CONSOLE,
-        LOG_TO_FILE,
-    )
+    """Configure root logging to file only."""
+    from app.config.settings import LOG_DIR, LOG_FILE_BACKUP_COUNT
 
     formatter = JsonLogFormatter()
     handlers: list[logging.Handler] = []
-    
-    # Console output
-    if LOG_TO_CONSOLE:
-        stream_handler = logging.StreamHandler(sys.stdout)
-        stream_handler.setFormatter(formatter)
-        handlers.append(stream_handler)
 
-    # File output
-    if LOG_TO_FILE:
-        app_log_path = os.path.join(LOG_DIR, "warning.log")
-        error_log_path = os.path.join(LOG_DIR, "error.log")
+    app_log_path = os.path.join(LOG_DIR, "warning.log")
+    error_log_path = os.path.join(LOG_DIR, "error.log")
+    combined_log_path = os.path.join(LOG_DIR, "app.log")
 
-        app_file_handler = _create_rotating_handler(
-            log_path=app_log_path,
-            formatter=formatter,
-            max_bytes=LOG_FILE_MAX_BYTES,
-            backup_count=LOG_FILE_BACKUP_COUNT,
-            level=logging.WARNING,
-            exact_level=logging.WARNING,
-        )
-        if app_file_handler is not None:
-            handlers.append(app_file_handler)
+    app_file_handler = _create_rotating_handler(
+        log_path=app_log_path,
+        formatter=formatter,
+        backup_count=LOG_FILE_BACKUP_COUNT,
+        level=logging.WARNING,
+        exact_level=logging.WARNING,
+    )
+    if app_file_handler is not None:
+        handlers.append(app_file_handler)
 
-        error_file_handler = _create_rotating_handler(
-            log_path=error_log_path,
-            formatter=formatter,
-            max_bytes=LOG_FILE_MAX_BYTES,
-            backup_count=LOG_FILE_BACKUP_COUNT,
-            level=logging.ERROR,
-        )
-        if error_file_handler is not None:
-            handlers.append(error_file_handler)
+    error_file_handler = _create_rotating_handler(
+        log_path=error_log_path,
+        formatter=formatter,
+        backup_count=LOG_FILE_BACKUP_COUNT,
+        level=logging.ERROR,
+    )
+    if error_file_handler is not None:
+        handlers.append(error_file_handler)
 
-    # Never allow startup to proceed with zero handlers.
-    if not handlers:
-        stream_handler = logging.StreamHandler(sys.stdout)
-        stream_handler.setFormatter(formatter)
-        handlers.append(stream_handler)
+    combined_file_handler = _create_rotating_handler(
+        log_path=combined_log_path,
+        formatter=formatter,
+        backup_count=LOG_FILE_BACKUP_COUNT,
+        level=logging.DEBUG,
+    )
+    if combined_file_handler is not None:
+        handlers.append(combined_file_handler)
 
     root_logger = logging.getLogger()
     root_logger.handlers = handlers
-    
-    # When showing only endpoints, suppress other INFO logs
-    if LOG_ENDPOINTS_ONLY:
-        root_logger.setLevel(LOG_LEVEL)
-        # Configure api.request logger separately to show INFO logs for endpoints
-        request_logger = logging.getLogger("api.request")
-        request_logger.setLevel(logging.INFO)
-        # Create a dedicated console handler for request logs
-        request_console_handler = logging.StreamHandler(sys.stdout)
-        request_console_handler.setFormatter(formatter)
-        # Clear any existing handlers and add only console
-        request_logger.handlers.clear()
-        request_logger.addHandler(request_console_handler)
-        request_logger.propagate = False
-    else:
-        root_logger.setLevel(LOG_LEVEL)
+    root_logger.setLevel(logging.INFO)
 
-    # Align framework loggers with app format/level.
-    for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access", "gunicorn", "gunicorn.error"):
+    for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access", "gunicorn", "gunicorn.error", "apscheduler"):
         framework_logger = logging.getLogger(logger_name)
         framework_logger.handlers = handlers
-        framework_logger.setLevel(LOG_LEVEL)
+        framework_logger.setLevel(logging.INFO)
         framework_logger.propagate = False

@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from app.utils.config_helpers import require, optional, to_int
+from app.utils.config_helpers import require, optional
 
 # Load environment variables from .env file
 load_dotenv()
@@ -20,8 +20,8 @@ JWT_SECRET = require(
     "Required for secure token generation."
 )
 JWT_ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = to_int("ACCESS_TOKEN_EXPIRE_MINUTES", 15)
-REFRESH_TOKEN_EXPIRE_MINUTES = to_int("REFRESH_TOKEN_EXPIRE_MINUTES", 43200)
+ACCESS_TOKEN_EXPIRE_MINUTES = 15
+REFRESH_TOKEN_EXPIRE_MINUTES = 43200
 
 FROM_EMAIL = require(
     "FROM_EMAIL",
@@ -51,18 +51,13 @@ LOCAL_DEV_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
 ADMIN_ACCESS_EMAILS = optional("ADMIN_ACCESS_EMAILS")
 ADMIN_ACCESS_FAIL_CLOSED = True
 
-BACKUP_PATH = "/app/backups"
-BACKUP_RETENTION_DAYS = to_int("BACKUP_RETENTION_DAYS", 7)
+BACKUP_PATH = optional("BACKUP_PATH", "backups")
+BACKUP_RETENTION_DAYS = 30
 
 DEMO_OTP = optional("DEMO_OTP", "")
 
-LOG_LEVEL = "INFO"
-LOG_TO_CONSOLE = True
-LOG_TO_FILE = False
-LOG_ENDPOINTS_ONLY = False
 LOG_DIR = "logs"
-LOG_FILE_MAX_BYTES = 10 * 1024 * 1024
-LOG_FILE_BACKUP_COUNT = 5
+LOG_FILE_BACKUP_COUNT = 30
 
 APP_VERSION = "1.0.0"
 

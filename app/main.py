@@ -24,14 +24,8 @@ from app.middleware.request_logging import RequestLoggingMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.database.init_db import ensure_mongodb_connection, ensure_indexes
 from app.utils.scheduler import setup_scheduler
-from app.utils.logging_config import setup_logging
 from app.config import settings
 
-# Initialize environment variables
-load_dotenv()
-
-# Configure logging
-setup_logging()
 logger = logging.getLogger(__name__)
 
 # Ensure 'static' directory exists
