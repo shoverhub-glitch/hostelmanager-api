@@ -25,25 +25,3 @@ db = client[db_name]
 
 def getCollection(name: str):
     return db[name]
-
-def is_transaction_unsupported(exc: Exception) -> bool:
-    """
-    Check if the exception indicates that MongoDB transactions are not supported.
-    This usually happens when running on a standalone MongoDB instance without a replica set.
-    """
-    if isinstance(exc, OperationFailure):
-        # Code 20: Transaction numbers are only allowed on a replica set member or mongos
-        # Code 13: Unauthorized (sometimes returned if session/transaction features are restricted)
-        if exc.code == 20:
-            return True
-        
-        error_msg = str(exc)
-        unsupported_markers = [
-            "Transaction numbers are only allowed",
-            "sessions are not supported",
-            "replica set member",
-            "not a replica set"
-        ]
-        return any(marker in error_msg for marker in unsupported_markers)
-    
-    return False

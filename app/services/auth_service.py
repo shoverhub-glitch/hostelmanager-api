@@ -341,7 +341,7 @@ async def send_email_otp_service(email: str):
         extra={"event": "registration_otp_generated", "is_new": bool(is_new), **_email_log_meta(normalized_email)},
     )
 
-    if settings.ENV.lower() != "production":
+    if settings.ENV.lower() != "production" and settings.DEMO_OTP:
         logger.info("registration_otp_demo_mode", extra={"event": "registration_otp_demo_mode", **_email_log_meta(normalized_email)})
         return JSONResponse(
             status_code=status.HTTP_200_OK,
@@ -542,7 +542,7 @@ async def forgot_password_service(email: str):
         "password_reset_otp_generated",
         extra={"event": "password_reset_otp_generated", "is_new": bool(is_new), **_email_log_meta(normalized_email)},
     )
-    if settings.ENV.lower() != "production":
+    if settings.ENV.lower() != "production" and settings.DEMO_OTP:
         logger.info("password_reset_otp_demo_mode", extra={"event": "password_reset_otp_demo_mode", **_email_log_meta(normalized_email)})
         return JSONResponse(
             status_code=status.HTTP_200_OK,

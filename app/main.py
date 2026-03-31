@@ -21,6 +21,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from app.utils.exception_handlers import add_global_exception_handlers
 from app.middleware.user_context import UserContextMiddleware
 from app.middleware.request_logging import RequestLoggingMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.database.init_db import ensure_mongodb_connection, ensure_indexes
 from app.utils.scheduler import setup_scheduler
 from app.utils.logging_config import setup_logging
@@ -78,6 +79,9 @@ app.add_middleware(UserContextMiddleware)
 # Security Middlewares
 if settings.ENFORCE_HTTPS:
     app.add_middleware(HTTPSRedirectMiddleware)
+
+# Security headers (X-Frame-Options, CSP, etc.)
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Rate Limiting
 app.state.limiter = limiter

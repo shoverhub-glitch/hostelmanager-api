@@ -17,8 +17,6 @@ async def ensure_mongodb_connection():
 
     try:
         await db.command("ping")
-        # Attempt to initiate replica set if possible (required for transactions)
-        await ensure_replica_set()
         return None
     except ServerSelectionTimeoutError:
         parsed = urlparse(mongo_url)
@@ -34,30 +32,6 @@ async def ensure_mongodb_connection():
     except Exception as exc:
         logger.error(f"MongoDB startup check failed: {exc}")
         return f"MongoDB startup check failed: {exc}"
-
-
-async def ensure_replica_set():
-    """
-    Attempt to initiate the replica set if the server is started with --replSet 
-    but not yet initiated. This is required for MongoDB transactions.
-    """
-    try:
-        # Check if the server is configured as a replica set member
-        status = await db.command("isMaster")
-        if "setName" in status:
-            # It's a replica set member. Check if it's already initiated.
-            try:
-                await db.command("replSetGetStatus")
-            except OperationFailure as e:
-                if e.code == 94:  # NotYetInitialized
-                    logger.info(f"MongoDB replica set '{status['setName']}' not yet initialized. Initiating...")
-                    await db.command("replSetInitiate")
-                    logger.info("MongoDB replica set initiated successfully.")
-                else:
-                    raise
-    except Exception as exc:
-        # Standalone servers or unauthorized users will fail here; we skip gracefully.
-        logger.debug(f"Replica set check/initiation skipped: {exc}")
 
 
 async def ensure_indexes():
@@ -177,6 +151,13 @@ async def ensure_indexes():
     await create_index_safe("subscriptions", "ownerId")
     await create_index_safe("subscriptions", "status")
     await create_index_safe("subscriptions", [("ownerId", 1), ("status", 1)])
+    await create_index_safe("subscriptions", "razorpaySubscriptionId")
+    
+    # ============ RENEWAL ORDERS COLLECTION ============
+    await create_index_safe("renewal_orders", "order_id", unique=True)
+    await create_index_safe("renewal_orders", "owner_id")
+    await create_index_safe("renewal_orders", "status")
+    await create_index_safe("renewal_orders", "created_at_dt")
 
     # ============ PENDING SUBSCRIPTIONS COLLECTION ============
     await create_index_safe("pending_subscriptions", [("owner_id", 1), ("razorpay_subscription_id", 1)], unique=True)
@@ -194,7 +175,11 @@ async def ensure_indexes():
     # ============ OTP ATTEMPTS COLLECTION ============
     await create_index_safe("otp_attempts", "email")
     await create_index_safe("otp_attempts", "updatedAt", expireAfterSeconds=60*60)
+    await create_index_safe("otp_attempts", "ip_address")
+    
+    # ============ LOGIN ATTEMPTS COLLECTION ============
     await create_index_safe("login_attempts", "updatedAt", expireAfterSeconds=60*60)
+    await create_index_safe("login_attempts", "ip_address")
     
     # ============ RAZORPAY ORDERS COLLECTION ============
     await create_index_safe("razorpay_orders", "order_id", unique=True)

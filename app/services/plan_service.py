@@ -11,6 +11,7 @@ import logging
 
 from app.database.mongodb import db
 from app.models.plan_schema import Plan, PlanCreate, PlanUpdate
+from app.utils.cache import cache_manager
 
 
 logger = logging.getLogger(__name__)
@@ -151,6 +152,9 @@ class PlanService:
             {"$set": update_dict}
         )
         
+        # Invalidate cache for this plan
+        await cache_manager.invalidate_all_plans()
+        
         # Fetch and return updated plan
         updated_plan = await db.plans.find_one({"name": plan_name.lower()})
         updated_plan['id'] = str(updated_plan['_id'])
@@ -201,6 +205,8 @@ class PlanService:
         
         result = await db.plans.delete_one({"name": plan_name.lower()})
         if result.deleted_count > 0:
+            # Invalidate cache
+            await cache_manager.invalidate_all_plans()
             logger.info("plan_deleted", extra={"event": "plan_deleted", "plan_name": plan_name.lower()})
         return result.deleted_count > 0
 
@@ -226,6 +232,8 @@ class PlanService:
         )
         
         if result.modified_count > 0 or result.matched_count > 0:
+            # Invalidate cache
+            await cache_manager.invalidate_all_plans()
             logger.info("plan_activated", extra={"event": "plan_activated", "plan_name": plan_name.lower()})
             return await PlanService.get_plan_by_name(plan_name)
         logger.warning("plan_activate_not_found", extra={"event": "plan_activate_not_found", "plan_name": plan_name.lower()})
@@ -258,6 +266,8 @@ class PlanService:
         )
         
         if result.modified_count > 0 or result.matched_count > 0:
+            # Invalidate cache
+            await cache_manager.invalidate_all_plans()
             logger.info("plan_deactivated", extra={"event": "plan_deactivated", "plan_name": plan_name.lower()})
             return await PlanService.get_plan_by_name(plan_name)
         logger.warning("plan_deactivate_not_found", extra={"event": "plan_deactivate_not_found", "plan_name": plan_name.lower()})

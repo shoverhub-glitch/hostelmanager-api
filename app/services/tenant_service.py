@@ -2,7 +2,7 @@ from app.models.tenant_schema import Tenant, TenantOut, BillingStatus, BillingCy
 from app.models.bed_schema import BedUpdate, BedStatus
 from app.models.payment_schema import PaymentMethod
 from app.services.bed_service import BedService
-from app.database.mongodb import getCollection, client, is_transaction_unsupported
+from app.database.mongodb import getCollection
 from datetime import datetime, timezone, date
 from dateutil.relativedelta import relativedelta
 from bson import ObjectId
@@ -246,6 +246,54 @@ class TenantService:
 
         tenant_data["isDeleted"] = False
 
+        # ── Validate referenced entities exist ────────────────────────────
+        property_id = tenant_data.get("propertyId")
+        if not property_id:
+            raise ValueError("propertyId is required")
+        
+        # Validate property exists
+        property_doc = await self.collection.database["properties"].find_one(
+            {"_id": ObjectId(property_id), "isDeleted": {"$ne": True}}
+        )
+        if not property_doc:
+            raise ValueError("Property not found")
+
+        # Validate room exists if provided
+        room_id = tenant_data.get("roomId")
+        if room_id:
+            room_doc = await self.collection.database["rooms"].find_one(
+                {"_id": ObjectId(room_id), "propertyId": property_id, "isDeleted": {"$ne": True}}
+            )
+            if not room_doc:
+                raise ValueError("Room not found or does not belong to this property")
+
+        # Validate bed exists if provided
+        bed_id = tenant_data.get("bedId")
+        if bed_id:
+            bed_doc = await self.collection.database["beds"].find_one(
+                {"_id": ObjectId(bed_id), "isDeleted": {"$ne": True}}
+            )
+            if not bed_doc:
+                raise ValueError("Bed not found")
+            
+            # Validate bed belongs to the room if roomId is provided
+            if room_id and bed_doc.get("roomId") != room_id:
+                raise ValueError("Bed does not belong to the specified room")
+            
+            # Validate bed belongs to the property
+            if bed_doc.get("propertyId") != property_id:
+                raise ValueError("Bed does not belong to the specified property")
+
+        # Validate rent is positive if provided
+        rent = tenant_data.get("rent")
+        if rent:
+            try:
+                rent_amount = float(str(rent).replace(",", "").replace("₹", "").strip())
+                if rent_amount < 0:
+                    raise ValueError("Rent amount cannot be negative")
+            except ValueError:
+                raise ValueError("Invalid rent amount format")
+
         today_date = datetime.now(timezone.utc).date()
         join_date_value = tenant_data.get("joinDate")
         join_date = self._coerce_to_date(join_date_value) if join_date_value else today_date
@@ -261,61 +309,34 @@ class TenantService:
         elif not auto_generate:
             tenant_data.pop("billingConfig", None)
 
-        # ── Atomically reserve bed + insert tenant ─────────────────────────
-        async def _reserve_bed_insert_tenant_and_link(*, session=None) -> None:
+        # ── Reserve bed + insert tenant ──────────────────────────
+        async def _reserve_bed_insert_tenant_and_link() -> None:
             bed_id = tenant_data.get("bedId")
             bed_collection = self.collection.database["beds"]
 
-            session_kwargs = {"session": session} if session is not None else {}
-            find_and_update_kwargs = {"return_document": True, **session_kwargs}
-
             if bed_id:
-                # FIX: Try ObjectId first, fall back to string id field.
-                # The original code had two separate update calls which could
-                # result in the bed being marked occupied without a tenant
-                # actually being inserted if the second call failed.
                 bed_filter = _build_bed_filter(bed_id, require_available=True)
 
                 result = await bed_collection.find_one_and_update(
                     bed_filter,
                     {"$set": {"status": BedStatus.OCCUPIED.value, "updatedAt": now}},
-                    **find_and_update_kwargs,
+                    return_document=True,
                 )
                 if not result:
                     raise ValueError("Bed not found or already occupied")
 
-            result = await self.collection.insert_one(tenant_data, **session_kwargs)
+            result = await self.collection.insert_one(tenant_data)
             tenant_data["id"] = str(result.inserted_id)
 
             if bed_id:
                 await bed_collection.update_one(
                     _build_bed_filter(bed_id),
                     {"$set": {"tenantId": tenant_data["id"]}},
-                    **session_kwargs,
                 )
 
-        # Prefer transactions for atomicity; degrade gracefully on standalone Mongo.
-        try:
-            async with await client.start_session() as session:
-                async with session.start_transaction():
-                    await _reserve_bed_insert_tenant_and_link(session=session)
-        except Exception as exc:
-            # FIX: The original code silently fell back even on real errors like
-            # "Bed not found or already occupied". We now only fall back when the
-            # exception is specifically about transactions not being supported.
-            if not is_transaction_unsupported(exc):
-                raise
+        await _reserve_bed_insert_tenant_and_link()
 
-            logger.warning(
-                "tenant_create_fallback_without_transaction",
-                extra={
-                    "event": "tenant_create_fallback_without_transaction",
-                    "reason": str(exc),
-                },
-            )
-            await _reserve_bed_insert_tenant_and_link()
-
-        # Create initial payment outside transaction (independent retry surface)
+        # Create initial payment (independent retry surface)
         if auto_generate and billing_config:
             anchor_day = billing_config.anchorDay
             current_month_anchor = self._get_current_month_anchor(anchor_day, today_date)
@@ -381,21 +402,53 @@ class TenantService:
         new_room_id = tenant_data.get("roomId", orig_room_id)
         new_status = tenant_data.get("tenantStatus", orig_status)
 
+        # ── Validate referenced entities exist ────────────────────────────
+        property_id = orig_doc.get("propertyId")
+        
+        # Validate new room exists if provided
+        if new_room_id and new_room_id != orig_room_id:
+            room_doc = await self.collection.database["rooms"].find_one(
+                {"_id": ObjectId(new_room_id), "propertyId": property_id, "isDeleted": {"$ne": True}}
+            )
+            if not room_doc:
+                raise ValueError("Room not found or does not belong to this property")
+
+        # Validate new bed exists if provided and changed
+        if new_bed_id and new_bed_id != orig_bed_id:
+            bed_doc = await self.collection.database["beds"].find_one(
+                {"_id": ObjectId(new_bed_id), "isDeleted": {"$ne": True}}
+            )
+            if not bed_doc:
+                raise ValueError("Bed not found")
+            
+            # Validate bed belongs to the room if roomId is provided
+            if new_room_id and bed_doc.get("roomId") != new_room_id:
+                raise ValueError("Bed does not belong to the specified room")
+            
+            # Validate bed belongs to the property
+            if bed_doc.get("propertyId") != property_id:
+                raise ValueError("Bed does not belong to the specified property")
+
+        # Validate rent is positive if provided
+        rent = tenant_data.get("rent")
+        if rent:
+            try:
+                rent_amount = float(str(rent).replace(",", "").replace("₹", "").strip())
+                if rent_amount < 0:
+                    raise ValueError("Rent amount cannot be negative")
+            except ValueError:
+                raise ValueError("Invalid rent amount format")
+
         # ── Vacate ─────────────────────────────────────────────────────────
         if new_status == "vacated" and orig_status != "vacated":
-            async def _free_bed_for_vacate(*, session=None) -> None:
-                if orig_bed_id:
-                    session_kwargs = {"session": session} if session is not None else {}
-                    result = await self.collection.database["beds"].find_one_and_update(
-                        _build_bed_filter(orig_bed_id),
-                        {"$set": {"status": BedStatus.AVAILABLE.value, "tenantId": None, "updatedAt": datetime.now(timezone.utc).isoformat()}},
-                        return_document=True,
-                        **session_kwargs
-                    )
-                    if not result:
-                        raise ValueError(f"Bed {orig_bed_id} not found")
-
-            await _run_with_transaction_fallback(_free_bed_for_vacate, logger, "tenant_update_vacate")
+            if orig_bed_id:
+                result = await self.collection.database["beds"].find_one_and_update(
+                    _build_bed_filter(orig_bed_id),
+                    {"$set": {"status": BedStatus.AVAILABLE.value, "tenantId": None, "updatedAt": datetime.now(timezone.utc).isoformat()}},
+                    return_document=True,
+                )
+                if not result:
+                    raise ValueError(f"Bed {orig_bed_id} not found")
 
             tenant_data["roomId"] = None
             tenant_data["bedId"] = None
@@ -409,18 +462,13 @@ class TenantService:
             if not new_bed_id or not new_room_id:
                 raise ValueError("Room and bed are mandatory when reactivating a vacated tenant")
 
-            async def _occupy_bed_for_reactivate(*, session=None) -> None:
-                session_kwargs = {"session": session} if session is not None else {}
-                result = await self.collection.database["beds"].find_one_and_update(
-                    _build_bed_filter(new_bed_id, require_available=True),
-                    {"$set": {"status": BedStatus.OCCUPIED.value, "tenantId": tenant_id, "updatedAt": datetime.now(timezone.utc).isoformat()}},
-                    return_document=True,
-                    **session_kwargs
-                )
-                if not result:
-                    raise ValueError("Bed is already occupied or not found")
-
-            await _run_with_transaction_fallback(_occupy_bed_for_reactivate, logger, "tenant_update_reactivate")
+            result = await self.collection.database["beds"].find_one_and_update(
+                _build_bed_filter(new_bed_id, require_available=True),
+                {"$set": {"status": BedStatus.OCCUPIED.value, "tenantId": tenant_id, "updatedAt": datetime.now(timezone.utc).isoformat()}},
+                return_document=True,
+            )
+            if not result:
+                raise ValueError("Bed is already occupied or not found")
 
             if "checkoutDate" not in tenant_data:
                 tenant_data["checkoutDate"] = None
@@ -434,30 +482,23 @@ class TenantService:
             bed_changed = orig_bed_id != new_bed_id
 
             if bed_changed:
-                async def _swap_beds_for_active(*, session=None) -> None:
-                    session_kwargs = {"session": session} if session is not None else {}
+                if orig_bed_id:
+                    result = await self.collection.database["beds"].find_one_and_update(
+                        _build_bed_filter(orig_bed_id),
+                        {"$set": {"status": BedStatus.AVAILABLE.value, "tenantId": None, "updatedAt": datetime.now(timezone.utc).isoformat()}},
+                        return_document=True,
+                    )
+                    if not result:
+                        raise ValueError(f"Original bed {orig_bed_id} not found")
 
-                    if orig_bed_id:
-                        result = await self.collection.database["beds"].find_one_and_update(
-                            _build_bed_filter(orig_bed_id),
-                            {"$set": {"status": BedStatus.AVAILABLE.value, "tenantId": None, "updatedAt": datetime.now(timezone.utc).isoformat()}},
-                            return_document=True,
-                            **session_kwargs
-                        )
-                        if not result:
-                            raise ValueError(f"Original bed {orig_bed_id} not found")
-
-                    if new_bed_id:
-                        result = await self.collection.database["beds"].find_one_and_update(
-                            _build_bed_filter(new_bed_id, require_available=True),
-                            {"$set": {"status": BedStatus.OCCUPIED.value, "tenantId": tenant_id, "updatedAt": datetime.now(timezone.utc).isoformat()}},
-                            return_document=True,
-                            **session_kwargs
-                        )
-                        if not result:
-                            raise ValueError("New bed is already occupied or not found")
-
-                await _run_with_transaction_fallback(_swap_beds_for_active, logger, "tenant_update_bed_swap")
+                if new_bed_id:
+                    result = await self.collection.database["beds"].find_one_and_update(
+                        _build_bed_filter(new_bed_id, require_available=True),
+                        {"$set": {"status": BedStatus.OCCUPIED.value, "tenantId": tenant_id, "updatedAt": datetime.now(timezone.utc).isoformat()}},
+                        return_document=True,
+                    )
+                    if not result:
+                        raise ValueError("New bed is already occupied or not found")
 
             if "checkoutDate" not in tenant_data:
                 tenant_data["checkoutDate"] = None
@@ -756,26 +797,3 @@ def _build_bed_filter(bed_id: str, require_available: bool = False) -> dict:
     if require_available:
         base["status"] = "available"
     return base
-
-
-async def _run_with_transaction_fallback(fn, log, event_prefix: str) -> None:
-    """
-    Try fn inside a MongoDB transaction. If the server doesn't support
-    transactions (standalone Mongo), fall back to running fn without one.
-    """
-    try:
-        async with await client.start_session() as session:
-            async with session.start_transaction():
-                await fn(session=session)
-    except Exception as exc:
-        if not is_transaction_unsupported(exc):
-            raise
-
-        log.warning(
-            f"{event_prefix}_fallback_without_transaction",
-            extra={
-                "event": f"{event_prefix}_fallback_without_transaction",
-                "reason": str(exc),
-            },
-        )
-        await fn()

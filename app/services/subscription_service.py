@@ -1,9 +1,10 @@
-from typing import Dict
+from typing import Dict, Optional
 
 from app.models.subscription_schema import Subscription, Usage
-from app.database.mongodb import db, client, is_transaction_unsupported
+from app.database.mongodb import db
 from datetime import datetime, timedelta, timezone
 from app.utils.ownership import build_owner_query
+from app.utils.cache import cache_manager
 import logging
 
 logger = logging.getLogger(__name__)
@@ -23,11 +24,22 @@ def format_price_text(price_paise: int) -> str:
 
 class SubscriptionService:
     @staticmethod
-    async def get_subscription(owner_id: str):
-        """Get active subscription for owner, creating default free if none is active."""
+    async def get_subscription(owner_id: str, use_cache: bool = True):
+        """
+        Get active subscription for owner, creating default free if none is active.
+        
+        Args:
+            owner_id: The owner's user ID
+            use_cache: Whether to use caching (default True for performance)
+        """
+        # Try cache first
+        if use_cache:
+            cached_sub = await cache_manager.get_subscription(owner_id)
+            if cached_sub is not None:
+                logger.debug(f"Subscription cache hit for {owner_id}")
+                return Subscription(**cached_sub)
+        
         try:
-            # FIX (High #8): Use MongoDB aggregation for efficient sorting and limit(1)
-            # This is much faster than fetching all into memory and sorting in Python.
             pipeline = [
                 {"$match": {"ownerId": owner_id, "status": "active"}},
                 {"$addFields": {
@@ -49,11 +61,12 @@ class SubscriptionService:
             docs = await cursor.to_list(length=1)
             
             if docs:
+                # Cache the result
+                if use_cache:
+                    await cache_manager.set_subscription(owner_id, docs[0])
                 return Subscription(**docs[0])
         except Exception as e:
             logger.exception("subscription_get_failed", extra={"event": "subscription_get_failed", "owner_id": owner_id, "error": str(e)})
-            # If it's a transient DB error, we should probably raise so the request fails 
-            # rather than returning a default free plan which might be a downgrade.
             raise
 
         # If truly not found, create default free subscription
@@ -104,7 +117,6 @@ class SubscriptionService:
         """
         Update subscription plan with dynamic period support.
         Ensures only one subscription is active for the user.
-        Uses MongoDB transaction to ensure atomicity.
         
         Args:
             owner_id: User ID
@@ -156,54 +168,33 @@ class SubscriptionService:
                 "updatedAt": now
             }
             
-            # Use transaction to ensure atomicity: mark old inactive, activate new
-            async def _perform_update(session=None):
-                # 1. Mark all other subscriptions for this owner as inactive
-                await db["subscriptions"].update_many(
-                    {"ownerId": owner_id, "plan": {"$ne": plan}},
-                    {"$set": {"status": "inactive", "updatedAt": now, "autoRenewal": False}},
-                    session=session
-                )
-                
-                # 2. Upsert the target subscription to active
-                result = await db["subscriptions"].find_one_and_update(
-                    {"ownerId": owner_id, "plan": plan},
-                    {"$set": sub_data},
-                    upsert=True,
-                    return_document=True,
-                    session=session
-                )
-                
-                if result:
-                    # Ensure createdAt exists (if it was an upsert-insert)
-                    if "createdAt" not in result:
-                        await db["subscriptions"].update_one(
-                            {"_id": result["_id"]},
-                            {"$set": {"createdAt": now}},
-                            session=session
-                        )
-                        result["createdAt"] = now
-                    return result
-                return None
-
-            try:
-                async with await client.start_session() as session:
-                    async with session.start_transaction():
-                        result_doc = await _perform_update(session=session)
-            except Exception as exc:
-                if not is_transaction_unsupported(exc):
-                    raise
-                
-                logger.warning(
-                    "subscription_update_fallback_without_transaction",
-                    extra={
-                        "event": "subscription_update_fallback_without_transaction",
-                        "reason": str(exc),
-                    },
-                )
-                result_doc = await _perform_update()
+            # 1. Mark all other subscriptions for this owner as inactive
+            await db["subscriptions"].update_many(
+                {"ownerId": owner_id, "plan": {"$ne": plan}},
+                {"$set": {"status": "inactive", "updatedAt": now, "autoRenewal": False}},
+            )
+            
+            # 2. Upsert the target subscription to active
+            result_doc = await db["subscriptions"].find_one_and_update(
+                {"ownerId": owner_id, "plan": plan},
+                {"$set": sub_data},
+                upsert=True,
+                return_document=True,
+            )
             
             if result_doc:
+                if "createdAt" not in result_doc:
+                    await db["subscriptions"].update_one(
+                        {"_id": result_doc["_id"]},
+                        {"$set": {"createdAt": now}},
+                    )
+                    result_doc["createdAt"] = now
+            else:
+                result_doc = None
+            
+            if result_doc:
+                # Invalidate cache after successful update
+                await cache_manager.invalidate_subscription(owner_id)
                 return Subscription(**result_doc)
             
             raise ValueError("Failed to update or create subscription")
@@ -213,8 +204,21 @@ class SubscriptionService:
             raise ValueError(f"Failed to update subscription: {str(e)}")
 
     @staticmethod
-    async def get_usage(owner_id: str):
-        """Get current resource usage for subscription quota checking"""
+    async def get_usage(owner_id: str, use_cache: bool = True):
+        """
+        Get current resource usage for subscription quota checking.
+        
+        Args:
+            owner_id: The owner's user ID
+            use_cache: Whether to use caching (default True for performance)
+        """
+        # Try cache first
+        if use_cache:
+            cached_usage = await cache_manager.get_usage(owner_id)
+            if cached_usage is not None:
+                logger.debug(f"Usage cache hit for {owner_id}")
+                return Usage(**cached_usage)
+        
         try:
             # Count active properties (exclude deleted and archived)
             owned_properties = await db["properties"].find(
@@ -235,17 +239,27 @@ class SubscriptionService:
                 {"propertyId": {"$in": property_ids}, "isDeleted": {"$ne": True}}
             ) if property_ids else 0
             now = datetime.now(timezone.utc).isoformat()
-            return Usage(
-                ownerId=owner_id,
-                properties=properties,
-                tenants=tenants,
-                rooms=rooms,
-                staff=staff,
-                updatedAt=now
-            )
+            usage_data = {
+                "ownerId": owner_id,
+                "properties": properties,
+                "tenants": tenants,
+                "rooms": rooms,
+                "staff": staff,
+                "updatedAt": now
+            }
+            
+            # Cache the result
+            if use_cache:
+                await cache_manager.set_usage(owner_id, usage_data)
+            
+            return Usage(**usage_data)
         except Exception as e:
             logger.exception("subscription_usage_get_failed", extra={"event": "subscription_usage_get_failed", "owner_id": owner_id, "error": str(e)})
-            # Return zero usage on error so user can still access the system
+            # Return zero usage on error - this is a deliberate tradeoff for availability.
+            # If we raised an error here, users would be locked out of creating resources
+            # when there's a temporary DB issue. We log the error so ops can investigate,
+            # but the user can continue using the system. Quota enforcement will happen
+            # on the next successful usage calculation.
             now = datetime.now(timezone.utc).isoformat()
             return Usage(
                 ownerId=owner_id,
@@ -257,17 +271,38 @@ class SubscriptionService:
             )
 
     @staticmethod
-    async def get_plan_limits(plan: str):
-        """Get features/limits for a plan from database"""
-        plan_doc = await db.plans.find_one({"name": plan.lower()})
+    async def get_plan_limits(plan: str, use_cache: bool = True):
+        """
+        Get features/limits for a plan from database.
+        
+        Args:
+            plan: Plan name
+            use_cache: Whether to use caching (default True for performance)
+        """
+        plan_lower = plan.lower()
+        
+        # Try cache first
+        if use_cache:
+            cached_limits = await cache_manager.get_plan_limits(plan_lower)
+            if cached_limits is not None:
+                return cached_limits
+        
+        plan_doc = await db.plans.find_one({"name": plan_lower})
         if not plan_doc:
             return None
-        return {
+        
+        limits = {
             'properties': plan_doc['properties'],
             'tenants': plan_doc['tenants'],
             'rooms': plan_doc['rooms'],
             'staff': plan_doc['staff'],
         }
+        
+        # Cache the result (plans rarely change)
+        if use_cache:
+            await cache_manager.set_plan_limits(plan_lower, limits)
+        
+        return limits
 
     @staticmethod
     async def get_all_plans():
