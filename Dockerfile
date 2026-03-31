@@ -45,16 +45,16 @@ RUN adduser --disabled-password --gecos "" appuser && \
 USER appuser
 
 # Expose internal port (used by nginx reverse proxy)
-EXPOSE 8000
+EXPOSE 3000
 
 # Healthcheck (important for container monitoring)
-HEALTHCHECK CMD curl -f http://localhost:8000/health || exit 1
+HEALTHCHECK CMD curl -f http://localhost:3000/health || exit 1
 
 # Optimized Gunicorn settings for low-memory EC2
 CMD ["gunicorn", \
      "-w", "1", \
      "-k", "uvicorn.workers.UvicornWorker", \
-     "--bind", "0.0.0.0:8000", \
+     "--bind", "0.0.0.0:3000", \
      "--timeout", "30", \
      "--keep-alive", "5", \
      "app.main:app"]
