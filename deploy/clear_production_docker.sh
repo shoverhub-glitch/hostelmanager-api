@@ -49,7 +49,7 @@ fi
 
 echo ""
 echo "=== Step 1: Stopping and removing containers & volumes ==="
-docker-compose --env-file "$ENV_FILE" -f "$SCRIPT_DIR/docker-compose.yml" down -v 2>/dev/null || true
+docker compose --env-file "$ENV_FILE" -f "$SCRIPT_DIR/docker-compose.yml" down -v 2>/dev/null || true
 
 echo ""
 echo "=== Step 2: Removing project images ==="
@@ -62,8 +62,7 @@ fi
 echo ""
 echo "=== Step 3: Dropping database ==="
 echo "Using Docker to connect to central MongoDB and drop database..."
-docker run --rm mongo:3.9 mongosh "$MONGO_URL" --eval "db.getSiblingDB('$DB_NAME').dropDatabase()" || \
-docker run --rm mongo:7.0 mongosh "$MONGO_URL" --eval "db.getSiblingDB('$DB_NAME').dropDatabase()"
+docker run --rm mongo:7 mongosh "$MONGO_URL" --eval "db.getSiblingDB('$DB_NAME').dropDatabase()"
 
 echo ""
 echo "============================================"

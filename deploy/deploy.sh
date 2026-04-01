@@ -23,7 +23,7 @@ source "$ENV_FILE"
 
 # Step 1: Start containers
 echo "=== Step 1: Starting containers ==="
-docker-compose --env-file "$ENV_FILE" -f "$SCRIPT_DIR/docker-compose.yml" up -d --build
+docker compose --env-file "$ENV_FILE" -f "$SCRIPT_DIR/docker-compose.yml" up -d --build
 
 # Step 2: Wait for container to be healthy
 echo ""
