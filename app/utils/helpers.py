@@ -64,17 +64,28 @@ def _csv_to_set(raw_value: str, to_lower: bool = False) -> set:
 
 
 def has_admin_access(user: dict) -> bool:
-	"""Check if user email is in admin allowlist."""
+	"""Check if user has admin access via email, user ID, or role."""
 	admin_emails = _csv_to_set(getattr(settings, "ADMIN_ACCESS_EMAILS", ""), to_lower=True)
+	admin_user_ids = _csv_to_set(getattr(settings, "ADMIN_ACCESS_USER_IDS", ""), to_lower=False)
+	admin_roles = _csv_to_set(getattr(settings, "ADMIN_ACCESS_ROLES", ""), to_lower=True)
 	fail_closed = bool(getattr(settings, "ADMIN_ACCESS_FAIL_CLOSED", True))
 
 	user_email = str(user.get("email") or "").strip().lower()
+	user_id = str(user.get("id") or user.get("_id") or "").strip()
+	user_role = str(user.get("role") or "").strip().lower()
 
-	# If emails are configured, check if user email is in the list
-	if admin_emails:
-		return user_email in admin_emails
+	if admin_emails and user_email in admin_emails:
+		return True
 
-	# If no emails configured and fail-closed is enabled, deny access
+	if admin_user_ids and user_id in admin_user_ids:
+		return True
+
+	if admin_roles and user_role in admin_roles:
+		return True
+
+	if admin_emails or admin_user_ids or admin_roles:
+		return False
+
 	return not fail_closed
 
 
