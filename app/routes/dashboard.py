@@ -68,29 +68,35 @@ async def get_dashboard_stats(request: Request, property_id: str):
         {"$match": {"propertyId": property_id, "isDeleted": {"$ne": True}}},
         {"$addFields": {
             "amountNumeric": {
-                "$convert": {
-                    "input": {
-                        "$replaceAll": {
+                "$cond": {
+                    "if": {"$eq": [{"$type": "$amountPaise"}, "int"]},
+                    "then": {"$divide": [{"$ifNull": ["$amountPaise", 0]}, 100]},
+                    "else": {
+                        "$convert": {
                             "input": {
                                 "$replaceAll": {
                                     "input": {
                                         "$replaceAll": {
-                                            "input": {"$toString": {"$ifNull": ["$amount", "0"]}},
-                                            "find": "₹",
+                                            "input": {
+                                                "$replaceAll": {
+                                                    "input": {"$toString": {"$ifNull": ["$amount", "0"]}},
+                                                    "find": "₹",
+                                                    "replacement": ""
+                                                }
+                                            },
+                                            "find": ",",
                                             "replacement": ""
                                         }
                                     },
-                                    "find": ",",
+                                    "find": " ",
                                     "replacement": ""
                                 }
                             },
-                            "find": " ",
-                            "replacement": ""
+                            "to": "double",
+                            "onError": 0,
+                            "onNull": 0
                         }
-                    },
-                    "to": "double",
-                    "onError": 0,
-                    "onNull": 0
+                    }
                 }
             },
             "paidDateKey": {

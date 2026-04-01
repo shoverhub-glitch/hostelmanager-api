@@ -333,7 +333,7 @@ async def list_payments(
                 "tenantId": 1,
                 "propertyId": 1,
                 "bed": 1,
-                "amount": {"$ifNull": ["$amount", "$amountPaise"]},
+                "amount": {"$ifNull": ["$amountPaise", "$amount"]},
                 "status": 1,
                 "dueDate": 1,
                 "paidDate": 1,
@@ -356,7 +356,6 @@ async def list_payments(
             }
         }
     ]
-    
     payments_cursor = await payment_service.collection.aggregate(pipeline).to_list(page_size)
     
     # Convert to Payment objects with formatted amounts

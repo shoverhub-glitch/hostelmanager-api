@@ -76,6 +76,7 @@ async def list_beds(request: Request, room_id: str = Query(None), property_id: s
     # Get paginated results
     cursor = bed_service.db["beds"].find(query).skip(skip).limit(page_size)
     async for doc in cursor:
+        doc["id"] = str(doc["_id"])
         beds.append(BedOut(**doc))
     
     return {
