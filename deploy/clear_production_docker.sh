@@ -43,8 +43,15 @@ echo ""
 echo "This will: stop/remove containers, volumes, images, and DROP database '$DB_NAME'"
 echo ""
 
+read -p "Type 'yes' to continue: " CONFIRM
+if [ "$CONFIRM" != "yes" ]; then
+    echo "Aborted."
+    exit 0
+fi
+
+echo ""
 echo "=== Step 1: Dropping database ==="
-docker exec hostel-api python /deploy/drop_database.py
+docker exec -e MONGO_URL="$MONGO_URL" -e MONGO_DB_NAME="$MONGO_DB_NAME" hostel-api python /deploy/drop_database.py -f
 
 echo ""
 echo "=== Step 2: Stopping and removing containers & volumes ==="
