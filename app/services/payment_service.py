@@ -1,7 +1,7 @@
 from typing import List, Optional, Union
 from datetime import datetime, timezone
 from bson import ObjectId
-from ..models.payment_schema import Payment, PaymentCreate, PaymentStatus, format_amount_paise, parse_amount_to_paise
+from ..models.payment_schema import Payment, PaymentCreate, PaymentStatus, format_amount_paise, parse_amount_to_paise, PaymentMethod
 from app.database.mongodb import getCollection
 import logging
 
@@ -178,6 +178,14 @@ class PaymentService:
             # Only auto-set if there's no existing paidDate or user is changing status
             if not payment.get("paidDate"):
                 update_data["paidDate"] = date_type.today().isoformat()
+        
+        # If status changes from "paid" to "due", clear the method field
+        if payment.get("status") == "paid" and update_data.get("status") == "due":
+            update_data["method"] = None
+        
+        # If status changes from "due" to "paid" and method is not provided, set default
+        if payment.get("status") == "due" and update_data.get("status") == "paid" and "method" not in update_data:
+            update_data["method"] = PaymentMethod.CASH.value
         
         # If status is changing from paid to due, keep the paidDate as reference
         # User can edit it if needed

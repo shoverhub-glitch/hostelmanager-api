@@ -1,6 +1,6 @@
 from app.models.tenant_schema import Tenant, TenantOut, BillingStatus, BillingCycle
 from app.models.bed_schema import BedUpdate, BedStatus
-from app.models.payment_schema import PaymentMethod
+from app.models.payment_schema import PaymentMethod, PaymentCreate, parse_amount_to_paise
 from app.services.bed_service import BedService
 from app.database.mongodb import getCollection
 from datetime import datetime, timezone, date
@@ -776,11 +776,12 @@ class TenantService:
                         if checkout_limit and current_due_date > checkout_limit:
                             break
 
+                        amount_paise = parse_amount_to_paise(tenant_doc.get("rent", 0))
                         payment_data = {
                             "tenantId": tenant_id,
                             "propertyId": tenant_doc.get("propertyId"),
                             "bed": tenant_doc.get("bedId", ""),
-                            "amount": tenant_doc.get("rent", "0"),
+                            "amountPaise": amount_paise,
                             "status": "due",
                             "dueDate": current_due_date.isoformat(),
                             "method": billing_config.method or PaymentMethod.CASH.value,
