@@ -1,23 +1,16 @@
-import asyncio
-import logging
 import os
-import shutil
-import subprocess
-import tempfile
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 from bson import ObjectId
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, status, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
-from app.config.settings import MONGO_DB_NAME, MONGO_URL, BACKUP_PATH, BACKUP_RETENTION_DAYS
+from app.config.settings import MONGO_DB_NAME, MONGO_URL
 from app.database.mongodb import db
 from app.utils.helpers import has_admin_access, require_admin_user
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-logger = logging.getLogger("backup_service")
 
 
 def _normalize_value(value: Any) -> Any:
@@ -34,214 +27,6 @@ def _normalize_value(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: _normalize_value(item) for key, item in value.items()}
     return value
-
-
-def _serialize_backup(doc: dict) -> dict:
-    """Standardize backup metadata for API response using camelCase."""
-    data = dict(doc)
-    mongo_id = data.pop("_id", None)
-    if mongo_id:
-        data["id"] = str(mongo_id)
-    
-    return {
-        "id": data.get("id"),
-        "filename": data.get("filename"),
-        "status": data.get("status"),
-        "sizeBytes": data.get("sizeBytes", 0),
-        "createdAt": _normalize_value(data.get("createdAt")),
-        "startedAt": _normalize_value(data.get("startedAt")),
-        "completedAt": _normalize_value(data.get("completedAt")),
-        "errorMessage": data.get("errorMessage"),
-        "createdBy": data.get("createdBy")
-    }
-
-
-async def _cleanup_old_backups_async():
-    """Delete backups older than the retention period from disk and DB."""
-    retention_cutoff = datetime.now(timezone.utc) - timedelta(days=BACKUP_RETENTION_DAYS)
-    
-    cursor = db["backups"].find({"createdAt": {"$lt": retention_cutoff}})
-    async for record in cursor:
-        file_path = record.get("filePath")
-        if file_path and os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except Exception as e:
-                logger.error(f"Failed to delete file {file_path}: {e}")
-        
-        await db["backups"].delete_one({"_id": record["_id"]})
-
-
-def _run_backup_task(backup_id: str, db_name: str, mongo_uri: str, target_dir: str):
-    """Synchronous worker function executed in background thread pool."""
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    filename = f"backup_{db_name}_{timestamp}"
-    dump_folder = os.path.join(tempfile.gettempdir(), f"dump_{timestamp}")
-    archive_base = os.path.join(target_dir, filename)
-    
-    def _do_mongodump():
-        result = subprocess.run(
-            ["mongodump", f"--uri={mongo_uri}", f"--out={dump_folder}"],
-            capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            raise Exception(result.stderr)
-        return result
-
-    async def _update_status(status_value: str, **extra_fields):
-        await db["backups"].update_one(
-            {"_id": ObjectId(backup_id)},
-            {"$set": {"status": status_value, **extra_fields}}
-        )
-
-    async def _run_async_backup():
-        try:
-            # Update status to running
-            await _update_status("running", startedAt=datetime.now(timezone.utc))
-
-            # Run mongodump in thread pool to not block
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, _do_mongodump)
-
-            # Create zip archive (synchronous, but fast)
-            final_zip_path = shutil.make_archive(archive_base, 'zip', dump_folder)
-            file_size = os.path.getsize(final_zip_path)
-
-            # Update status to completed
-            await _update_status(
-                "completed",
-                filename=f"{filename}.zip",
-                filePath=final_zip_path,
-                sizeBytes=file_size,
-                completedAt=datetime.now(timezone.utc)
-            )
-            
-            # Cleanup old backups
-            await _cleanup_old_backups_async()
-            
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Backup task {backup_id} failed: {error_msg}")
-            try:
-                await _update_status("failed", errorMessage=error_msg)
-            except Exception:
-                pass
-    
-    asyncio.run(_run_async_backup())
-    
-    # Cleanup dump folder after async work is done
-    if os.path.exists(dump_folder):
-        shutil.rmtree(dump_folder)
-
-
-@router.post("/backups/trigger", status_code=status.HTTP_202_ACCEPTED)
-async def trigger_backup(
-    background_tasks: BackgroundTasks,
-    current_user: dict = Depends(require_admin_user)
-):
-    """Trigger a non-blocking system backup."""
-    new_backup = {
-        "filename": "Pending...",
-        "status": "pending",
-        "sizeBytes": 0,
-        "createdAt": datetime.now(timezone.utc),
-        "createdBy": current_user.get("email"),
-    }
-    
-    result = await db["backups"].insert_one(new_backup)
-    backup_id = str(result.inserted_id)
-
-    mongo_uri = MONGO_URL or f"mongodb://localhost:27017/{MONGO_DB_NAME}"
-    
-    background_tasks.add_task(
-        _run_backup_task, 
-        backup_id, 
-        MONGO_DB_NAME, 
-        mongo_uri, 
-        BACKUP_PATH
-    )
-
-    return {
-        "message": "Backup task initiated",
-        "backupId": backup_id,
-        "status": "pending"
-    }
-
-
-@router.get("/backups")
-async def list_backups(
-    page: int = Query(1, ge=1),
-    pageSize: int = Query(10, ge=1, le=50),
-    current_user: dict = Depends(require_admin_user)
-):
-    """List backup history and statuses."""
-    skip = (page - 1) * pageSize
-    total = await db["backups"].count_documents({})
-    
-    cursor = db["backups"].find().sort("createdAt", -1).skip(skip).limit(pageSize)
-    backups = [_serialize_backup(b) async for b in cursor]
-    
-    return {
-        "rows": backups,
-        "meta": {
-            "total": total,
-            "page": page,
-            "pageSize": pageSize
-        }
-    }
-
-
-@router.get("/backups/{backup_id}/download")
-async def download_stored_backup(
-    backup_id: str,
-    current_user: dict = Depends(require_admin_user)
-):
-    """Download a completed backup file from disk."""
-    try:
-        obj_id = ObjectId(backup_id)
-    except:
-        raise HTTPException(status_code=400, detail="Invalid backup ID format")
-
-    record = await db["backups"].find_one({"_id": obj_id})
-    if not record:
-        raise HTTPException(status_code=404, detail="Backup record not found")
-    
-    if record["status"] != "completed":
-        raise HTTPException(status_code=400, detail=f"Backup is in {record['status']} state")
-
-    file_path = record.get("filePath")
-    if not file_path or not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Backup file missing from storage")
-
-    return FileResponse(
-        path=file_path,
-        filename=record["filename"],
-        media_type="application/zip"
-    )
-
-
-@router.delete("/backups/{backup_id}")
-async def delete_backup(
-    backup_id: str,
-    current_user: dict = Depends(require_admin_user)
-):
-    """Manually delete a backup file and its record."""
-    try:
-        obj_id = ObjectId(backup_id)
-    except:
-        raise HTTPException(status_code=400, detail="Invalid backup ID format")
-
-    record = await db["backups"].find_one({"_id": obj_id})
-    if record:
-        file_path = record.get("filePath")
-        if file_path and os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except:
-                pass
-        await db["backups"].delete_one({"_id": obj_id})
-    
-    return {"message": "Backup deleted successfully" }
 
 
 def _serialize_document(doc: dict[str, Any]) -> dict[str, Any]:
@@ -595,3 +380,50 @@ async def update_subscription(
         immutable_fields={"_id", "id", "createdAt"},
         not_found_message="Subscription not found",
     )
+
+
+@router.get("/database-stats")
+async def get_database_stats(current_user: dict = Depends(require_admin_user)):
+    """
+    Get MongoDB database statistics including storage info.
+    """
+    try:
+        stats = await db.command("dbStats")
+        
+        collection_stats = []
+        collections = await db.list_collection_names()
+        
+        for coll_name in collections:
+            try:
+                coll_stats = await db.command("collStats", coll_name)
+                collection_stats.append({
+                    "name": coll_name,
+                    "count": coll_stats.get("count", 0),
+                    "sizeBytes": coll_stats.get("size", 0),
+                    "avgObjSize": coll_stats.get("avgObjSize", 0),
+                    "storageSizeBytes": coll_stats.get("storageSize", 0),
+                    "totalIndexSizeBytes": coll_stats.get("totalIndexSize", 0),
+                    "numIndexes": coll_stats.get("nindexes", 0),
+                })
+            except Exception:
+                pass
+        
+        collection_stats.sort(key=lambda x: x.get("sizeBytes", 0), reverse=True)
+        
+        return {
+            "data": {
+                "database": {
+                    "name": stats.get("db"),
+                    "rawDataSizeBytes": stats.get("dataSize", 0),
+                    "storageSizeBytes": stats.get("storageSize", 0),
+                    "indexSizeBytes": stats.get("indexSize", 0),
+                    "totalSizeBytes": stats.get("totalSize", 0),
+                    "objectCount": stats.get("objects", 0),
+                    "collectionsCount": stats.get("collections", 0),
+                    "viewsCount": stats.get("views", 0),
+                },
+                "collections": collection_stats
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get database stats: {str(e)}")
