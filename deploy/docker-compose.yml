@@ -26,6 +26,9 @@ services:
       options:
         max-size: "5m"
         max-file: "2"
+    volumes:
+      - ./:/deploy
+
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s

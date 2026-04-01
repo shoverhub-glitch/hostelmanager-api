@@ -39,20 +39,19 @@ echo "MongoDB URL: $MONGO_URL"
 echo "Database Name: $DB_NAME"
 echo ""
 
-# Confirmation prompt
-read -p "This will: stop/remove containers, volumes, images from docker-compose, and DROP database '$DB_NAME'. Continue? (yes/no): " CONFIRM
+echo ""
+echo "This will: stop/remove containers, volumes, images, and DROP database '$DB_NAME'"
+echo ""
 
-if [ "$CONFIRM" != "yes" ]; then
-    echo "Aborted."
-    exit 0
-fi
+echo "=== Step 1: Dropping database ==="
+docker exec hostel-api python /deploy/drop_database.py
 
 echo ""
-echo "=== Step 1: Stopping and removing containers & volumes ==="
+echo "=== Step 2: Stopping and removing containers & volumes ==="
 docker compose --env-file "$ENV_FILE" -f "$SCRIPT_DIR/docker-compose.yml" down -v 2>/dev/null || true
 
 echo ""
-echo "=== Step 2: Removing project images ==="
+echo "=== Step 3: Removing project images ==="
 IMAGES=$(docker images --filter "reference=hostel*" --format "{{.Repository}}:{{.Tag}}" 2>/dev/null || true)
 if [ -n "$IMAGES" ]; then
     echo "Removing images: $IMAGES"
@@ -60,17 +59,12 @@ if [ -n "$IMAGES" ]; then
 fi
 
 echo ""
-echo "=== Step 3: Dropping database ==="
-echo "Using Docker to connect to central MongoDB and drop database..."
-docker run --rm mongo:7 mongosh "$MONGO_URL" --eval "db.getSiblingDB('$DB_NAME').dropDatabase()"
-
-echo ""
 echo "============================================"
 echo "   PRODUCTION CLEAR COMPLETE"
 echo "============================================"
 echo ""
+echo "Database: $DB_NAME - DROPPED"
 echo "Containers: Stopped and removed"
 echo "Volumes: Removed"
 echo "Images: Removed (project only)"
-echo "Database: $DB_NAME - DROPPED"
 echo ""
