@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  hostel-api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+
+    container_name: hostel-api
+    restart: unless-stopped
+
+    env_file:
+      - ../.env
+
+    expose:
+      - "3000"
+
+    networks:
+      - shared_network
+
+    mem_limit: 256m
+    cpus: "0.5"
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+    volumes:
+      - ./:/deploy
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  shared_network:
+    external: true
