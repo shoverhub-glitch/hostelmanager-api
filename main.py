@@ -83,13 +83,15 @@ app.add_exception_handler(RateLimitExceeded, lambda request, exc: JSONResponse(
 ))
 app.add_middleware(SlowAPIMiddleware)
 
+
 # CORS Configuration
 if not settings.ALLOWED_ORIGINS:
-    allowed_origins = ["*"]
+    allowed_origins = []  # Block all origins
 else:
     allowed_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()]
+    # If the parsed list is empty, also block all origins
     if not allowed_origins:
-        allowed_origins = ["*"]
+        allowed_origins = []
 
 allow_credentials = settings.ALLOW_CREDENTIALS
 allow_local_origins = settings.ALLOW_LOCAL_ORIGINS
