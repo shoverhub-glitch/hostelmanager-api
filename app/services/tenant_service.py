@@ -327,6 +327,12 @@ class TenantService:
                 billing_config = tenant_data.get("billingConfig")
                 if isinstance(billing_config, dict):
                     billing_config = BillingConfig(**billing_config)
+                # --- Anchor day logic: force status to 'due' if anchorDay is in the future ---
+                anchor_day = billing_config.anchorDay
+                today_date = datetime.now(timezone.utc).date()
+                current_month_anchor = self._get_current_month_anchor(anchor_day, today_date)
+                if current_month_anchor > today_date:
+                    billing_config.status = BillingStatus.DUE.value
                 tenant_data["billingConfig"] = billing_config.model_dump()
             else:
                 billing_config = BillingConfig(
