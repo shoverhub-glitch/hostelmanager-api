@@ -607,41 +607,24 @@ class TenantService:
             logger.warning("tenant_delete_invalid_id", extra={"event": "tenant_delete_invalid_id", "tenant_id": tenant_id})
             return {"success": False, "message": "Invalid tenant ID."}
 
-        doc = await self.collection.find_one({"_id": obj_id, "isDeleted": {"$ne": True}})
+        doc = await self.collection.find_one({"_id": obj_id})
         if not doc:
             logger.warning("tenant_delete_not_found", extra={"event": "tenant_delete_not_found", "tenant_id": tenant_id})
-            return {"success": False, "message": "Tenant not found or already deleted."}
+            return {"success": False, "message": "Tenant not found."}
 
         bed_id = doc.get("bedId")
         if bed_id:
             await bed_service.update_bed(bed_id, BedUpdate(status=BedStatus.AVAILABLE.value, tenantId=None))
 
-        now = datetime.now(timezone.utc).isoformat()
-
         payments_collection = getCollection("payments")
-        await payments_collection.update_many(
-            {"tenantId": tenant_id},
-            {"$set": {"isDeleted": True, "updatedAt": now}}
-        )
+        await payments_collection.delete_many({"tenantId": tenant_id})
 
-        await self.collection.update_one(
-            {"_id": obj_id},
-            {
-                "$set": {
-                    "isDeleted": True,
-                    "updatedAt": now,
-                    "checkoutDate": doc.get("checkoutDate") or now,
-                    "billingConfig": None,
-                    "roomId": None,
-                    "bedId": None,
-                }
-            }
-        )
+        await self.collection.delete_one({"_id": obj_id})
         logger.info("tenant_delete_success", extra={"event": "tenant_delete_success", "tenant_id": tenant_id, "property_id": doc.get("propertyId")})
         return {
             "success": True,
             "tenantId": tenant_id,
-            "message": "Tenant and all associated payment records soft-deleted successfully."
+            "message": "Tenant and all associated records deleted successfully."
         }
 
     async def generate_monthly_payments(self):
