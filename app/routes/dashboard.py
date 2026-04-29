@@ -135,7 +135,6 @@ async def get_dashboard_stats(request: Request, property_id: str):
         {
             "$match": {
                 "propertyId": property_id,
-                "isDeleted": {"$ne": True},
             }
         },
         {"$addFields": {

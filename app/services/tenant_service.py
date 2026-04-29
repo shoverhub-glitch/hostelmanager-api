@@ -113,14 +113,14 @@ class TenantService:
 
     async def get_tenants(
         self,
-        property_id: str = None,
-        search: str = None,
-        status: str = None,
+        property_id: Optional[str] = None,
+        search: Optional[str] = None,
+        status: Optional[str] = None,
         skip: int = 0,
         limit: int = 50,
         include_room_bed: bool = True,
         property_ids: Optional[List[str]] = None,
-        sort: str = None,
+        sort: Optional[str] = None,
     ):
         query = {}
 
@@ -207,18 +207,15 @@ class TenantService:
                         "createdAt": 1,
                         "updatedAt": 1,
                         "billingConfig": 1,
-                        "autoGeneratePayments": 1,
-                        "roomNumber": {"$arrayElemAt": ["$room_info.roomNumber", 0]},
-                        "bedNumber": {"$arrayElemAt": ["$bed_info.bedNumber", 0]}
-                    }
-                }
-            ])
+                         "billingConfig": 1,
+                         "autoGeneratePayments": 1,
+                         "roomNumber": {"$arrayElemAt": ["$room_info.roomNumber", 0]},
+                         "bedNumber": {"$arrayElemAt": ["$bed_info.bedNumber", 0]}
+                     }
+                 }
+             ])
 
-        pipeline.extend([
-            {"$sort": {"createdAt": sort_order}},
-            {"$skip": skip},
-            {"$limit": limit}
-        ])
+        pipeline.append({"$sort": {"createdAt": sort_order}})
 
         cursor = self.collection.aggregate(pipeline)
         tenants = []
@@ -265,8 +262,6 @@ class TenantService:
         if not tenant_data.get("updatedAt"):
             tenant_data["updatedAt"] = now
 
-        # Removed isDeleted
-
         # ── Validate referenced entities exist ────────────────────────────
         property_id = tenant_data.get("propertyId")
         if not property_id:
@@ -274,7 +269,7 @@ class TenantService:
         
         # Validate property exists
         property_doc = await self.collection.database["properties"].find_one(
-            {"_id": ObjectId(property_id), "isDeleted": {"$ne": True}}
+            {"_id": ObjectId(property_id)}
         )
         if not property_doc:
             raise ValueError("Property not found")
@@ -283,7 +278,7 @@ class TenantService:
         room_id = tenant_data.get("roomId")
         if room_id:
             room_doc = await self.collection.database["rooms"].find_one(
-                {"_id": ObjectId(room_id), "propertyId": property_id, "isDeleted": {"$ne": True}}
+                {"_id": ObjectId(room_id), "propertyId": property_id}
             )
             if not room_doc:
                 raise ValueError("Room not found or does not belong to this property")
@@ -292,7 +287,7 @@ class TenantService:
         bed_id = tenant_data.get("bedId")
         if bed_id:
             bed_doc = await self.collection.database["beds"].find_one(
-                {"_id": ObjectId(bed_id), "isDeleted": {"$ne": True}}
+                {"_id": ObjectId(bed_id)}
             )
             if not bed_doc:
                 raise ValueError("Bed not found")
@@ -328,12 +323,13 @@ class TenantService:
                 if isinstance(billing_config, dict):
                     billing_config = BillingConfig(**billing_config)
                 # --- Anchor day logic: force status to 'due' if anchorDay is in the future ---
-                anchor_day = billing_config.anchorDay
-                today_date = datetime.now(timezone.utc).date()
-                current_month_anchor = self._get_current_month_anchor(anchor_day, today_date)
-                if current_month_anchor > today_date:
-                    billing_config.status = BillingStatus.DUE.value
-                tenant_data["billingConfig"] = billing_config.model_dump()
+                if billing_config:
+                    anchor_day = billing_config.anchorDay
+                    today_date = datetime.now(timezone.utc).date()
+                    current_month_anchor = self._get_current_month_anchor(anchor_day, today_date)
+                    if current_month_anchor > today_date:
+                        billing_config.status = BillingStatus.DUE.value
+                    tenant_data["billingConfig"] = billing_config.model_dump()
             else:
                 billing_config = BillingConfig(
                     status=BillingStatus.DUE.value,
@@ -420,7 +416,7 @@ class TenantService:
 
     async def update_tenant(self, tenant_id: str, tenant_data: dict):
         tenant_data["updatedAt"] = datetime.now(timezone.utc).isoformat()
-        for protected_key in ["isDeleted"]:
+        for protected_key in []:
             tenant_data.pop(protected_key, None)
 
         try:
@@ -429,7 +425,7 @@ class TenantService:
             logger.warning("tenant_update_invalid_id", extra={"event": "tenant_update_invalid_id", "tenant_id": tenant_id})
             return None
 
-        orig_doc = await self.collection.find_one({"_id": obj_id, "isDeleted": {"$ne": True}})
+        orig_doc = await self.collection.find_one({"_id": obj_id})
         if not orig_doc:
             logger.warning("tenant_update_not_found", extra={"event": "tenant_update_not_found", "tenant_id": tenant_id})
             return None
@@ -446,7 +442,7 @@ class TenantService:
         # Validate new room exists if provided
         if new_room_id and new_room_id != orig_room_id:
             room_doc = await self.collection.database["rooms"].find_one(
-                {"_id": ObjectId(new_room_id), "propertyId": property_id, "isDeleted": {"$ne": True}}
+                {"_id": ObjectId(new_room_id), "propertyId": property_id}
             )
             if not room_doc:
                 raise ValueError("Room not found or does not belong to this property")
@@ -454,7 +450,7 @@ class TenantService:
         # Validate new bed exists if provided and changed
         if new_bed_id and new_bed_id != orig_bed_id:
             bed_doc = await self.collection.database["beds"].find_one(
-                {"_id": ObjectId(new_bed_id), "isDeleted": {"$ne": True}}
+                {"_id": ObjectId(new_bed_id)}
             )
             if not bed_doc:
                 raise ValueError("Bed not found")
@@ -529,12 +525,7 @@ class TenantService:
 
             if update_fields:
                 await payments_collection.update_many(
-                    {
-                        "tenantId": tenant_id,
-                        "status": "due",
-                        "isDeleted": {"$ne": True},
-                        "dueDate": {"$gte": today_date.isoformat()},
-                    },
+                    {"tenantId": tenant_id, "status": "due", "dueDate": {"$gte": today_date.isoformat()}},
                     {"$set": {**update_fields, "updatedAt": datetime.now(timezone.utc).isoformat()}}
                 )
 
@@ -543,10 +534,9 @@ class TenantService:
                 {
                     "tenantId": tenant_id,
                     "status": "due",
-                    "isDeleted": {"$ne": True},
                     "dueDate": {"$gte": today_date.isoformat()},
                 },
-                {"$set": {"isDeleted": True, "updatedAt": datetime.now(timezone.utc).isoformat()}}
+                {"$set": {"updatedAt": datetime.now(timezone.utc).isoformat()}}
             )
 
         elif not orig_auto_generate and new_auto_generate:
@@ -563,11 +553,7 @@ class TenantService:
 
                 due_date = current_month_anchor if is_future_anchor else today_date
 
-                existing = await payments_collection.find_one({
-                    "tenantId": tenant_id,
-                    "dueDate": due_date.isoformat(),
-                    "isDeleted": {"$ne": True},
-                })
+                existing = await payments_collection.find_one({"tenantId": tenant_id, "dueDate": due_date.isoformat()})
                 if not existing:
                     current_rent = tenant_data.get("rent") or orig_doc.get("rent", "0")
                     current_bed = tenant_data.get("bedId") or orig_doc.get("bedId")
@@ -645,7 +631,6 @@ class TenantService:
             logger.info("tenant_payment_cron_started", extra={"event": "tenant_payment_cron_started", "date": today.isoformat()})
 
             tenant_cursor = self.collection.find({
-                "isDeleted": {"$ne": True},
                 "autoGeneratePayments": True,
                 "billingConfig": {"$exists": True},
                 "billingConfig.billingCycle": BillingCycle.MONTHLY.value,
@@ -662,7 +647,7 @@ class TenantService:
                     anchor_day = billing_config.anchorDay
 
                     latest_payment = await payments_collection.find_one(
-                        {"tenantId": tenant_id, "isDeleted": {"$ne": True}},
+                        {"tenantId": tenant_id},
                         sort=[("dueDate", -1)]
                     )
 
@@ -729,16 +714,11 @@ class TenantService:
                             "status": "due",
                             "dueDate": current_due_date.isoformat(),
                             "method": billing_config.method or PaymentMethod.CASH.value,
-                            "isDeleted": False,
                             "createdAt": datetime.now(timezone.utc),
                             "updatedAt": datetime.now(timezone.utc)
                         }
 
-                        exists = await payments_collection.find_one({
-                            "tenantId": tenant_id,
-                            "dueDate": payment_data["dueDate"],
-                            "isDeleted": {"$ne": True}
-                        })
+                        exists = await payments_collection.find_one({"tenantId": tenant_id, "dueDate": payment_data["dueDate"]})
 
                         if not exists:
                             await payments_collection.insert_one(payment_data)
@@ -804,7 +784,7 @@ def _build_bed_filter(bed_id: str, require_available: bool = False) -> dict:
     except (InvalidId, Exception):
         id_clause = {"id": bed_id}
 
-    base = {**id_clause, "isDeleted": {"$ne": True}}
+    base = {**id_clause}
     if require_available:
         base["status"] = "available"
     return base

@@ -144,7 +144,6 @@ async def ensure_indexes():
     await create_index_safe("staff", "propertyId")
     await create_index_safe("staff", "role")
     await create_index_safe("staff", "status")
-    await create_index_safe("staff", [("propertyId", 1), ("isDeleted", 1)])
     
     # ============ EMAIL OTP COLLECTION ============
     await create_index_safe("email_otps", "email")

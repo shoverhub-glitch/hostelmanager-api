@@ -258,15 +258,6 @@ async def login_user_service(data: UserLogin):
                 detail=f"Invalid credentials. {remaining_attempts} attempt(s) remaining."
             )
 
-    # SECURITY: Additional user validation checks
-    if user.get("isDeleted"):
-        logger.warning("login_deleted_account", extra={"event": "login_deleted_account", **_email_log_meta(normalized_email)})
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is no longer available")
-
-    if user.get("isDisabled"):
-        logger.warning("login_disabled_account", extra={"event": "login_disabled_account", **_email_log_meta(normalized_email)})
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account has been disabled. Contact support.")
-
     # Check if account requires email verification
     if user.get("requiresEmailVerification") and not user.get("isEmailVerified"):
         logger.warning("login_unverified_account", extra={"event": "login_unverified_account", **_email_log_meta(normalized_email)})
@@ -300,7 +291,7 @@ async def send_email_otp_service(email: str):
     normalized_email = email.strip().lower()
     
     # SECURITY: Prevent duplicate registration
-    existing_user = await users_collection.find_one({"email": normalized_email, "isDeleted": False})
+    existing_user = await users_collection.find_one({"email": normalized_email})
     if existing_user:
         auth_provider = existing_user.get("authProvider", "email")
         logger.warning(
@@ -458,9 +449,6 @@ async def refresh_token_service(payload):
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
 
-    if user.get("isDeleted"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deleted")
-
     if user.get("isDisabled"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account has been disabled")
 
@@ -613,12 +601,6 @@ async def reset_password_service(email: str, otp: str, new_password: str):
             detail="User not found"
         )
 
-    if user.get("isDeleted"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account is deleted and cannot be recovered"
-        )
-
     hashed_password = hash_password(new_password)
     await users_collection.update_one(
         {"_id": user["_id"]},
@@ -675,9 +657,6 @@ async def change_password_service(request: Request, old_password: str, new_passw
     user = await users_collection.find_one({"_id": user_id})
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
-    if user.get("isDeleted"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deleted")
 
     if not verify_password(old_password, user.get("password", "")):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Old password is incorrect")

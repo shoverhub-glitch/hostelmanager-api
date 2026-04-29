@@ -43,7 +43,6 @@ class PaymentService:
         if payment_dict.get("status") == "paid" and not payment_dict.get("paidDate"):
             payment_dict["paidDate"] = now.date().isoformat()
         
-        # Removed isDeleted
         payment_dict["createdAt"] = now
         payment_dict["updatedAt"] = now
         

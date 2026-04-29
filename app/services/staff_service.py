@@ -21,7 +21,7 @@ class StaffService:
         limit: int = 50,
     ):
         """Get list of staff with optional filtering"""
-        query = {"isDeleted": {"$ne": True}}
+        query = {}
         
         if property_id:
             query["propertyId"] = property_id
@@ -73,7 +73,6 @@ class StaffService:
         """Create new staff member"""
         staff_data["createdAt"] = datetime.now(timezone.utc).isoformat()
         staff_data["updatedAt"] = datetime.now(timezone.utc).isoformat()
-        staff_data["isDeleted"] = False
 
         result = await self.collection.insert_one(staff_data)
         created_staff = await self.collection.find_one({"_id": result.inserted_id})
@@ -114,17 +113,12 @@ class StaffService:
             return None
 
     async def delete_staff(self, staff_id: str) -> bool:
-        """Delete staff member (soft delete)"""
+        """Delete staff member (hard delete)"""
         try:
-            update_data = {
-                "isDeleted": True,
-                "deletedAt": datetime.now(timezone.utc).isoformat(),
-                "updatedAt": datetime.now(timezone.utc).isoformat(),
-            }
-            result = await self.collection.update_one(
-                {"_id": ObjectId(staff_id)}, {"$set": update_data}
+            result = await self.collection.delete_one(
+                {"_id": ObjectId(staff_id)}
             )
-            deleted = result.modified_count > 0
+            deleted = result.deleted_count > 0
             if deleted:
                 logger.info("staff_deleted", extra={"event": "staff_deleted", "staff_id": staff_id})
             return deleted

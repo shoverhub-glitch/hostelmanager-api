@@ -181,7 +181,6 @@ async def list_payments(
     # Build match stage
     match_stage = {
         "propertyId": {"$in": property_ids},
-        "isDeleted": {"$ne": True}
     }
     
     if propertyId:

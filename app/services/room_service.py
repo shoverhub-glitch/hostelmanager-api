@@ -4,6 +4,7 @@ from datetime import datetime,timezone
 from bson import ObjectId
 from app.services.bed_service import BedService
 from app.models.bed_schema import BedCreate
+from typing import Optional
 import logging
 
 
@@ -16,7 +17,7 @@ class RoomService:
     def __init__(self):
         self.collection = getCollection("rooms")
 
-    async def get_rooms(self, property_id: str = None):
+    async def get_rooms(self, property_id: Optional[str] = None):
         query = {}
         if property_id:
             query["propertyId"] = property_id
@@ -74,8 +75,7 @@ class RoomService:
                 propertyId=property_id,
                 roomId=room_id,
                 bedNumber=str(i),
-                status="available",
-                ownerId=room_data.get("ownerId")
+                status="available"
             )
             await bed_service.create_bed(bed)
         logger.info(
@@ -105,7 +105,6 @@ class RoomService:
             return None
 
         room_data["updatedAt"] = datetime.now(timezone.utc).isoformat()
-        # Removed isDeleted cleanup
 
         # If roomNumber is being updated, check for duplicates
         if "roomNumber" in room_data:
@@ -137,7 +136,7 @@ class RoomService:
             return Room(**doc)
         return None
     
-    async def _handle_bed_count_change(self, room_id: str, room_data: dict, current_room: dict = None):
+    async def _handle_bed_count_change(self, room_id: str, room_data: dict, current_room: Optional[dict] = None):
         """Handle changes in number of beds - relocate or vacate tenants as needed"""
         beds_collection = getCollection("beds")
         tenants_collection = getCollection("tenants")
@@ -233,14 +232,13 @@ class RoomService:
         
         elif new_bed_count > current_bed_count:
             # Increasing beds - create new beds
-            owner_id = current_room.get("ownerId")
+            owner_id = current_room.get("ownerId") if isinstance(current_room, dict) else None
             for i in range(current_bed_count + 1, new_bed_count + 1):
                 bed = BedCreate(
                     propertyId=property_id,
                     roomId=room_id,
                     bedNumber=str(i),
-                    status="available",
-                    ownerId=owner_id
+                    status="available"
                 )
                 await bed_service.create_bed(bed)
 
@@ -391,23 +389,10 @@ class RoomService:
                     extra={"event": "room_delete_tenant_relocated", "room_id": room_id, "tenant_id": tenant_id},
                 )
             
-            # Soft delete the bed instead of just making it available
-            await beds_collection.update_one(
-                {"_id": bed["_id"]},
-                {
-                    "$set": {
-                        "isDeleted": True,
-                        "status": "available",
-                        "tenantId": None,
-                        "updatedAt": now
-                    }
-                }
-            )
+            # Hard delete the bed
+            await beds_collection.delete_one({"_id": bed["_id"]})
         
-        # Soft delete the room
-        await self.collection.update_one(
-            {"_id": object_id}, 
-            {"$set": {"isDeleted": True, "updatedAt": now}}
-        )
+        # Hard delete the room
+        await self.collection.delete_one({"_id": object_id})
         logger.info("room_deleted", extra={"event": "room_deleted", "room_id": room_id, "beds_deleted": len(beds)})
         return {"success": True, "roomId": room_id}
