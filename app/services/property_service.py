@@ -216,11 +216,11 @@ class PropertyService:
                 "event": "property_deleted_with_cascade",
                 "property_id": property_id,
                 "owner_id": owner_id,
-                "tenants_deleted": tenants_result.modified_count,
-                "payments_deleted": payments_result.modified_count,
-                "beds_deleted": beds_result.modified_count,
-                "rooms_deleted": rooms_result.modified_count,
-                "staff_deleted": staff_result.modified_count,
+                "tenants_deleted": tenants_result.deleted_count,
+                "payments_deleted": payments_result.deleted_count,
+                "beds_deleted": beds_result.deleted_count,
+                "rooms_deleted": rooms_result.deleted_count,
+                "staff_deleted": staff_result.deleted_count,
             },
         )
         
