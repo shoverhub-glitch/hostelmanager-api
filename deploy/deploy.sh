@@ -61,28 +61,43 @@ fi
 # Step 4: Create/update fixed test user
 echo ""
 echo "=== Step 4: Ensuring test user exists ==="
-docker exec hostel-api python -c "import asyncio; from datetime import datetime, timezone; from app.database.mongodb import db; from app.utils.helpers import hash_password; \
-async def main(): \
-    users = db['users']; \
-    now = datetime.now(timezone.utc); \
-    await users.update_one( \
-        {'email': 'test@shoverhub.com'}, \
-        {'$set': { \
-            'name': 'Test User', \
-            'phone': '9123123123', \
-            'password': hash_password('Test@123'), \
-            'role': 'propertyowner', \
-            'isEmailVerified': True, \
-            'updatedAt': now \
-        }, '$setOnInsert': { \
-            'createdAt': now, \
-            'lastLogin': None, \
-            'propertyIds': [] \
-        }}, \
-        upsert=True \
-    ); \
-    print('Test user ready: test@shoverhub.com'); \
-asyncio.run(main())"
+docker exec -i hostel-api python - <<'PY'
+import asyncio
+from datetime import datetime, timezone
+
+from app.database.mongodb import db
+from app.utils.helpers import hash_password
+
+
+async def main() -> None:
+    users = db["users"]
+    now = datetime.now(timezone.utc)
+
+    await users.update_one(
+        {"email": "test@shoverhub.com"},
+        {
+            "$set": {
+                "name": "Test User",
+                "phone": "9123123123",
+                "password": hash_password("Test@123"),
+                "role": "propertyowner",
+                "isEmailVerified": True,
+                "updatedAt": now,
+            },
+            "$setOnInsert": {
+                "createdAt": now,
+                "lastLogin": None,
+                "propertyIds": [],
+            },
+        },
+        upsert=True,
+    )
+
+    print("Test user ready: test@shoverhub.com")
+
+
+asyncio.run(main())
+PY
 
 echo ""
 echo "============================================"
