@@ -52,10 +52,6 @@ class UserContextMiddleware(BaseHTTPMiddleware):
         is_public = request.url.path in public_paths or any(
             request.url.path.startswith(prefix) for prefix in public_prefixes
         )
-
-        # Safety guard: admin namespaces must never be public even if env is misconfigured.
-        if request.url.path.startswith(f"{v_prefix}/admin"):
-            is_public = False
         
         if is_public:
             # Allow public access, skip authentication

@@ -2,7 +2,7 @@
 import logging
 from app.database.mongodb import db
 from app.models.property_schema import PropertyOut
-from app.utils.ownership import build_owner_query, normalize_property_owners
+from app.utils.ownership import build_owner_query
 from typing import List
 from datetime import datetime, timezone
 from bson import ObjectId
@@ -43,7 +43,6 @@ class PropertyService:
             "_id",
             "id",
             "ownerId",
-            "ownerIds",
             "createdAt",
             "active",
         ]:
@@ -54,7 +53,6 @@ class PropertyService:
         owner_id = self._require_owner_id(owner_id)
         now = datetime.now(timezone.utc).isoformat()
         doc = self._sanitize_property_create(property_data)
-        doc["ownerIds"] = [owner_id]
         doc["ownerId"] = owner_id
         # ...existing code...
         doc["active"] = True
@@ -62,7 +60,6 @@ class PropertyService:
         doc["updatedAt"] = now
         result = await self.db["properties"].insert_one(doc)
         doc["id"] = str(result.inserted_id)
-        normalize_property_owners(doc, fallback_owner_id=owner_id)
         # Update user document to add propertyId
         await self.db["users"].update_one(
             {"_id": self._to_object_id(owner_id, field_name="owner id")},
@@ -85,7 +82,7 @@ class PropertyService:
         return properties
     
     async def list_properties_paginated(self, user_id: str, skip: int = 0, limit: int = 50):
-        """List user properties with pagination and ownership normalization."""
+        """List user properties with pagination."""
         user_id = self._require_owner_id(user_id)
         query = build_owner_query(user_id)
         
@@ -97,25 +94,6 @@ class PropertyService:
         cursor = self.db["properties"].find(query).skip(skip).limit(limit)
         async for doc in cursor:
             doc["id"] = str(doc["_id"])
-
-            original_owner_id = doc.get("ownerId")
-            original_owner_ids = doc.get("ownerIds") if isinstance(doc.get("ownerIds"), list) else None
-            normalize_property_owners(doc, fallback_owner_id=user_id)
-
-            if (
-                not isinstance(original_owner_id, str)
-                or original_owner_ids != doc.get("ownerIds")
-            ):
-                await self.db["properties"].update_one(
-                    {"_id": doc["_id"]},
-                    {
-                        "$set": {
-                            "ownerId": doc.get("ownerId"),
-                            "ownerIds": doc.get("ownerIds", []),
-                        }
-                    }
-                )
-
             properties.append(PropertyOut(**doc))
 
         logger.info(
@@ -160,7 +138,6 @@ class PropertyService:
         if not doc:
             return None
         doc["id"] = str(doc["_id"])
-        normalize_property_owners(doc, fallback_owner_id=owner_id)
         logger.info(
             "property_updated",
             extra={

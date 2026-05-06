@@ -51,7 +51,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Process-Time"] = f"{elapsed_ms / 1000:.4f}"
 
-        suspicious = status_code in {401, 403, 429} or ("/admin" in path and status_code >= 400)
+        suspicious = status_code in {401, 403, 429}
         level = logging.WARNING if suspicious else logging.INFO
         if elapsed_ms > 1000:
             level = max(level, logging.WARNING)

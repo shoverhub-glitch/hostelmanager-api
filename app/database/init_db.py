@@ -97,10 +97,10 @@ async def ensure_indexes():
     await create_index_safe("token_blacklist", "expiresAt", expireAfterSeconds=0)
     
     # ============ PROPERTIES COLLECTION ============
-    await create_index_safe("properties", "ownerIds")
+    await create_index_safe("properties", "ownerId")
     await create_index_safe("properties", "createdAt")
     await create_index_safe("properties", "active")
-    await create_index_safe("properties", [("ownerIds", 1), ("active", 1)])
+    await create_index_safe("properties", [("ownerId", 1), ("active", 1)])
     try:
         await create_index_safe("properties", [("name", "text"), ("address", "text")])
     except Exception:

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deploy API using Docker Compose and create admin if configured
+# Deploy API using Docker Compose
 # Usage: ./deploy.sh
 
 set -e
@@ -21,13 +21,26 @@ fi
 # Load environment variables
 source "$ENV_FILE"
 
-# Step 1: Start containers
-echo "=== Step 1: Starting containers ==="
-docker compose --env-file "$ENV_FILE" -f "$SCRIPT_DIR/docker-compose.yml" up -d --build
+echo "This will rebuild the backend image, restart the backend container, and ensure the test user exists."
+read -p "Continue with deploy? Type 'yes' to continue (or 'no' to cancel): " CONFIRM
 
-# Step 2: Wait for container to be healthy
+if [ "$CONFIRM" != "yes" ]; then
+    echo "Cancelled. Deployment was not started."
+    exit 0
+fi
+
+# Step 1: Build image (always)
+echo "=== Step 1: Building backend image (no cache) ==="
+docker compose --env-file "$ENV_FILE" -f "$SCRIPT_DIR/docker-compose.yml" build --no-cache
+
+# Step 2: Start containers
 echo ""
-echo "=== Step 2: Waiting for container to be healthy ==="
+echo "=== Step 2: Starting containers ==="
+docker compose --env-file "$ENV_FILE" -f "$SCRIPT_DIR/docker-compose.yml" up -d --force-recreate
+
+# Step 3: Wait for container to be healthy
+echo ""
+echo "=== Step 3: Waiting for container to be healthy ==="
 MAX_WAIT=60
 COUNTER=0
 while [ $COUNTER -lt $MAX_WAIT ]; do
@@ -45,22 +58,31 @@ if [ $COUNTER -ge $MAX_WAIT ]; then
     echo "Warning: Container did not become healthy within $MAX_WAIT seconds, continuing anyway..."
 fi
 
-# Step 3: Create admin if configured
+# Step 4: Create/update fixed test user
 echo ""
-echo "=== Step 3: Creating admin user ==="
-if [ -n "$ADMIN_BOOTSTRAP_EMAIL" ] && [ -n "$ADMIN_BOOTSTRAP_PASSWORD" ]; then
-    echo "Admin credentials found in .env, creating admin user..."
-    docker exec hostel-api python create_admin.py \
-        --name "${ADMIN_BOOTSTRAP_NAME:-Admin}" \
-        --email "$ADMIN_BOOTSTRAP_EMAIL" \
-        --password "$ADMIN_BOOTSTRAP_PASSWORD" \
-        --phone "${ADMIN_BOOTSTRAP_PHONE:-}" \
-        --role "${ADMIN_BOOTSTRAP_ROLE:-admin}" \
-        --grant-by "${ADMIN_BOOTSTRAP_GRANT_BY:-email}" \
-        --skip-env-update
-else
-    echo "Admin credentials not configured (ADMIN_BOOTSTRAP_EMAIL and ADMIN_BOOTSTRAP_PASSWORD not set), skipping..."
-fi
+echo "=== Step 4: Ensuring test user exists ==="
+docker exec hostel-api python -c "import asyncio; from datetime import datetime, timezone; from app.database.mongodb import db; from app.utils.helpers import hash_password; \
+async def main(): \
+    users = db['users']; \
+    now = datetime.now(timezone.utc); \
+    await users.update_one( \
+        {'email': 'test@shoverhub.com'}, \
+        {'$set': { \
+            'name': 'Test User', \
+            'phone': '9123123123', \
+            'password': hash_password('Test@123'), \
+            'role': 'propertyowner', \
+            'isEmailVerified': True, \
+            'updatedAt': now \
+        }, '$setOnInsert': { \
+            'createdAt': now, \
+            'lastLogin': None, \
+            'propertyIds': [] \
+        }}, \
+        upsert=True \
+    ); \
+    print('Test user ready: test@shoverhub.com'); \
+asyncio.run(main())"
 
 echo ""
 echo "============================================"

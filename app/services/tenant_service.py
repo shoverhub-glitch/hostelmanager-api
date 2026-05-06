@@ -54,16 +54,16 @@ class TenantService:
         return date(year, month, clamped_day)
 
     @classmethod
-    def _calculate_initial_due_date(cls, anchor_day: int, billing_status: str, today: date) -> date:
+    def _calculate_initial_due_date(cls, anchor_day: int, today: date) -> date:
         """
-        Calculate the due date for the initial payment when a tenant is created.
+        Calculate first payment due date from selected monthly anchor day.
 
         Rules:
-        - `due`: next upcoming anchor (current month if anchor not yet passed, else next month).
-        - `paid`: most recently passed anchor (current month if anchor passed, else previous month).
+        - Past anchor day in current month -> next month's anchor day.
+        - Today's anchor day -> today (create immediately).
+        - Future anchor day in current month -> this month's anchor day.
         """
         current_month_anchor = cls._get_current_month_anchor(anchor_day, today)
-        is_future_anchor = current_month_anchor > today
 
         def _add_month_with_clamp(base_date: date, months: int) -> date:
             result = base_date + relativedelta(months=months)
@@ -73,43 +73,9 @@ class TenantService:
                 clamp_day_to_month(result.year, result.month, anchor_day)
             )
 
-        if billing_status == BillingStatus.DUE.value:
-            if not is_future_anchor:
-                return _add_month_with_clamp(current_month_anchor, 1)
-            return current_month_anchor
-        else:  # paid
-            if is_future_anchor:
-                return _add_month_with_clamp(current_month_anchor, -1)
-            return current_month_anchor
-
-    @classmethod
-    def _calculate_due_date_for_join_date(cls, anchor_day: int, join_date: date, today: date) -> date:
-        """
-        Calculate initial due date based on selected join date.
-        """
-        current_month_anchor = cls._get_current_month_anchor(anchor_day, today)
-
-        def _add_month_clamped(base: date) -> date:
-            result = base + relativedelta(months=1)
-            return date(
-                result.year,
-                result.month,
-                clamp_day_to_month(result.year, result.month, anchor_day)
-            )
-
-        if join_date < today:
-            return _add_month_clamped(current_month_anchor)
-
-        if join_date > today:
-            if current_month_anchor > today:
-                return current_month_anchor
-            return _add_month_clamped(current_month_anchor)
-
-        return cls._calculate_initial_due_date(
-            anchor_day=anchor_day,
-            billing_status=BillingStatus.DUE.value,
-            today=today,
-        )
+        if current_month_anchor < today:
+            return _add_month_with_clamp(current_month_anchor, 1)
+        return current_month_anchor
 
     async def get_tenants(
         self,
@@ -311,9 +277,6 @@ class TenantService:
                 raise ValueError("Invalid rent amount format")
 
         today_date = datetime.now(timezone.utc).date()
-        join_date_value = tenant_data.get("joinDate")
-        join_date = self._coerce_to_date(join_date_value) if join_date_value else today_date
-
         auto_generate = tenant_data.get("autoGeneratePayments", True)
 
         billing_config = None
@@ -370,24 +333,8 @@ class TenantService:
         # Create initial payment (independent retry surface)
         if auto_generate and billing_config:
             anchor_day = billing_config.anchorDay
-            current_month_anchor = self._get_current_month_anchor(anchor_day, today_date)
-            is_future_anchor = current_month_anchor > today_date
-            is_future_join = join_date > today_date
-
-            if is_future_join or is_future_anchor:
-                if is_future_anchor:
-                    due_date = current_month_anchor
-                else:
-                    next_month = current_month_anchor + relativedelta(months=1)
-                    due_date = date(
-                        next_month.year,
-                        next_month.month,
-                        clamp_day_to_month(next_month.year, next_month.month, anchor_day)
-                    )
-                initial_status = billing_config.status
-            else:
-                due_date = today_date
-                initial_status = billing_config.status
+            due_date = self._calculate_initial_due_date(anchor_day=anchor_day, today=today_date)
+            initial_status = billing_config.status
 
             payment = PaymentCreate(
                 tenantId=tenant_data["id"],
@@ -503,6 +450,12 @@ class TenantService:
 
         if "billingConfig" in tenant_data:
             tenant_data["billingConfig"] = tenant_data["billingConfig"] or None
+            if tenant_data["billingConfig"] and tenant_data.get("autoGeneratePayments", orig_doc.get("autoGeneratePayments", True)):
+                normalized_config = BillingConfig(**tenant_data["billingConfig"])
+                current_month_anchor = self._get_current_month_anchor(normalized_config.anchorDay, datetime.now(timezone.utc).date())
+                if current_month_anchor > datetime.now(timezone.utc).date():
+                    normalized_config.status = BillingStatus.DUE.value
+                tenant_data["billingConfig"] = normalized_config.model_dump()
 
         # ── Payment sync ───────────────────────────────────────────────────
         orig_auto_generate = orig_doc.get("autoGeneratePayments", True)
@@ -548,10 +501,10 @@ class TenantService:
                     new_billing_config = new_billing_config_data
 
                 anchor_day = new_billing_config.anchorDay
-                current_month_anchor = self._get_current_month_anchor(anchor_day, today_date)
-                is_future_anchor = current_month_anchor > today_date
+                due_date = self._calculate_initial_due_date(anchor_day=anchor_day, today=today_date)
 
-                due_date = current_month_anchor if is_future_anchor else today_date
+                if self._get_current_month_anchor(anchor_day, today_date) > today_date:
+                    new_billing_config.status = BillingStatus.DUE.value
 
                 existing = await payments_collection.find_one({"tenantId": tenant_id, "dueDate": due_date.isoformat()})
                 if not existing:
