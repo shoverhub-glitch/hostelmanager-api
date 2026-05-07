@@ -77,6 +77,10 @@ class TenantService:
             return _add_month_with_clamp(current_month_anchor, 1)
         return current_month_anchor
 
+    @classmethod
+    def _is_anchor_today(cls, anchor_day: int, today: date) -> bool:
+        return cls._get_current_month_anchor(anchor_day, today) == today
+
     async def get_tenants(
         self,
         property_id: Optional[str] = None,
@@ -289,9 +293,9 @@ class TenantService:
                 if billing_config:
                     anchor_day = billing_config.anchorDay
                     today_date = datetime.now(timezone.utc).date()
-                    current_month_anchor = self._get_current_month_anchor(anchor_day, today_date)
-                    if current_month_anchor > today_date:
+                    if not self._is_anchor_today(anchor_day, today_date):
                         billing_config.status = BillingStatus.DUE.value
+                        billing_config.method = None
                     tenant_data["billingConfig"] = billing_config.model_dump()
             else:
                 billing_config = BillingConfig(
@@ -336,16 +340,18 @@ class TenantService:
             due_date = self._calculate_initial_due_date(anchor_day=anchor_day, today=today_date)
             initial_status = billing_config.status
 
-            payment = PaymentCreate(
-                tenantId=tenant_data["id"],
-                propertyId=tenant_data["propertyId"],
-                bed=tenant_data.get("bedId"),
-                amount=tenant_data["rent"],
-                status=initial_status,
-                dueDate=due_date,
-                method=billing_config.method if initial_status == BillingStatus.PAID.value else None
-            )
-            await payment_service.create_payment(payment)
+            # Only create immediately when due date is today; otherwise monthly cron creates it on schedule.
+            if due_date == today_date:
+                payment = PaymentCreate(
+                    tenantId=tenant_data["id"],
+                    propertyId=tenant_data["propertyId"],
+                    bed=tenant_data.get("bedId"),
+                    amount=tenant_data["rent"],
+                    status=initial_status,
+                    dueDate=due_date,
+                    method=billing_config.method if initial_status == BillingStatus.PAID.value else None
+                )
+                await payment_service.create_payment(payment)
 
         logger.info(
             "tenant_create_success",
@@ -452,9 +458,9 @@ class TenantService:
             tenant_data["billingConfig"] = tenant_data["billingConfig"] or None
             if tenant_data["billingConfig"] and tenant_data.get("autoGeneratePayments", orig_doc.get("autoGeneratePayments", True)):
                 normalized_config = BillingConfig(**tenant_data["billingConfig"])
-                current_month_anchor = self._get_current_month_anchor(normalized_config.anchorDay, datetime.now(timezone.utc).date())
-                if current_month_anchor > datetime.now(timezone.utc).date():
+                if not self._is_anchor_today(normalized_config.anchorDay, datetime.now(timezone.utc).date()):
                     normalized_config.status = BillingStatus.DUE.value
+                    normalized_config.method = None
                 tenant_data["billingConfig"] = normalized_config.model_dump()
 
         # ── Payment sync ───────────────────────────────────────────────────
@@ -503,11 +509,12 @@ class TenantService:
                 anchor_day = new_billing_config.anchorDay
                 due_date = self._calculate_initial_due_date(anchor_day=anchor_day, today=today_date)
 
-                if self._get_current_month_anchor(anchor_day, today_date) > today_date:
+                if not self._is_anchor_today(anchor_day, today_date):
                     new_billing_config.status = BillingStatus.DUE.value
+                    new_billing_config.method = None
 
                 existing = await payments_collection.find_one({"tenantId": tenant_id, "dueDate": due_date.isoformat()})
-                if not existing:
+                if not existing and due_date == today_date:
                     current_rent = tenant_data.get("rent") or orig_doc.get("rent", "0")
                     current_bed = tenant_data.get("bedId") or orig_doc.get("bedId")
                     current_property = tenant_data.get("propertyId") or orig_doc.get("propertyId")
